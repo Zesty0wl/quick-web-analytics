@@ -1,0 +1,14 @@
+{
+  "name": "@qwa/tracker",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "build": "node build.mjs",
+    "test": "vitest run"
+  },
+  "devDependencies": {
+    "esbuild": "0.28.2",
+    "jsdom": "30.1.1",
+    "vitest": "4.1.11"
+  }
+}

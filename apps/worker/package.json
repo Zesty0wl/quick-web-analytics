@@ -1,0 +1,27 @@
+{
+  "name": "@qwa/worker",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "dev": "wrangler dev",
+    "deploy": "wrangler deploy",
+    "test": "vitest run",
+    "typecheck": "tsc --noEmit"
+  },
+  "dependencies": {
+    "@qwa/shared": "*",
+    "hono": "4.13.8",
+    "hyparquet": "1.31.1",
+    "hyparquet-writer": "0.16.10",
+    "isbot": "5.2.2",
+    "jose": "6.2.12",
+    "ua-parser-js": "1.0.41"
+  },
+  "devDependencies": {
+    "@cloudflare/workers-types": "5.20260923.1",
+    "@types/ua-parser-js": "0.7.39",
+    "typescript": "5.9.3",
+    "vitest": "4.1.11",
+    "wrangler": "4.135.0"
+  }
+}

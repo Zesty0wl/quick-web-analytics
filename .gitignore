@@ -1,0 +1,21 @@
+# Credentials — never commit
+cftoken.md
+.dev.vars
+.env*
+
+node_modules/
+dist/
+.wrangler/
+seed/
+*.tsbuildinfo
+apps/worker/public/
+.vite/
+
+# Your deployment's Worker config (copy apps/worker/wrangler.example.jsonc); demo config is generated
+apps/worker/wrangler.jsonc
+apps/worker/.demo.wrangler.jsonc
+.smoke.wrangler.jsonc
+.DS_Store
+*.zip
+# Private working notes (not part of the public repo)
+internal/

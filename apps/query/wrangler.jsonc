@@ -1,0 +1,11 @@
+{
+  "$schema": "../../node_modules/wrangler/config-schema.json",
+  "name": "qwa-query",
+  "main": "src/index.ts",
+  "compatibility_date": "2026-09-20",
+  "workers_dev": false,
+  "limits": { "cpu_ms": 120000 },
+  "observability": { "enabled": true, "head_sampling_rate": 1 },
+  "r2_buckets": [{ "binding": "DATA", "bucket_name": "qwa-data" }],
+  "vars": { "MEMORY_LIMIT": "96MB" }
+}

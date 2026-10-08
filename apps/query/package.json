@@ -1,0 +1,20 @@
+{
+  "name": "@qwa/query",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "deploy": "wrangler deploy",
+    "test": "vitest run",
+    "typecheck": "tsc --noEmit"
+  },
+  "dependencies": {
+    "@ducklings/workers": "1.5.5",
+    "@qwa/shared": "*"
+  },
+  "devDependencies": {
+    "@cloudflare/workers-types": "5.20260923.1",
+    "typescript": "5.9.3",
+    "vitest": "4.1.11",
+    "wrangler": "4.135.0"
+  }
+}
