@@ -114,6 +114,9 @@ export function describeAnomaly(a: { day: string; kind: "spike" | "drop" | "outa
   const weekday = new Date(`${a.day}T12:00:00Z`).toLocaleDateString("en-GB", { weekday: "long", timeZone: "UTC" });
   if (a.metric === "intraday" && a.detail) {
     const h = (x: number) => `${String(((x % 24) + 24) % 24).padStart(2, "0")}:00`;
+    if (a.detail.window === "last3h" && a.kind === "spike") {
+      return `A burst: ${whole(a.value)} visits between ${h(a.detail.hour - 3)} and ${h(a.detail.hour)}, ${(a.expected ? a.value / a.expected : 0).toFixed(1)}× a usual ${weekday} for those hours (about ${whole(a.expected)})`;
+    }
     if (a.detail.window === "last3h") return `${a.value === 0 ? "No visits" : `Only ${whole(a.value)} visits`} between ${h(a.detail.hour - 3)} and ${h(a.detail.hour)}, against about ${whole(a.expected)} on a usual ${weekday}. Is the tracker still installed?`;
     const ratio = a.expected ? a.value / a.expected : 0;
     return `So far today (to ${h(a.detail.hour)}): ${whole(a.value)} visits, ${a.kind === "spike" ? (ratio >= 2 ? `${ratio.toFixed(1)}×` : `+${Math.round((ratio - 1) * 100)}% on`) : `${Math.round((1 - ratio) * 100)}% below`} a usual ${weekday} by then (about ${whole(a.expected)})`;

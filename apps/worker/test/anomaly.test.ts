@@ -80,6 +80,17 @@ group("detectAnomalies", () => {
 });
 
 group("detectIntraday", () => {
+  it("flags a burst in the last three hours that the day so far dilutes", () => {
+    const hist = Array.from({ length: 6 }, (_, k) => ({ today: 1000 + k * 60, last3h: 200 + k * 10 }));
+    // Day so far only 1.5× usual, but the last three hours are 6×.
+    expect(detectIntraday({ today: 1600, last3h: 1400, history: hist, hour: 13 })).toMatchObject({ kind: "spike", window: "last3h", value: 1400 });
+    // 3× in the last three hours isn't a burst.
+    expect(detectIntraday({ today: 1300, last3h: 700, history: hist, hour: 13 })).toBeNull();
+    // Small sites need +200 visits, not just a big ratio.
+    const small = Array.from({ length: 6 }, () => ({ today: 40, last3h: 8 }));
+    expect(detectIntraday({ today: 90, last3h: 60, history: small, hour: 13 })).toBeNull();
+  });
+
   const history = (today: number, last3h: number) => Array.from({ length: 6 }, (_, i) => ({ today: today + (i % 3) * 10 - 10, last3h: last3h + (i % 2) * 6 - 3 }));
 
   it("stays quiet on a normal day", () => {

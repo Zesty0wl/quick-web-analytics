@@ -245,8 +245,11 @@ export async function checkIntraday(env: Env, site: Site, opts: { send?: boolean
     .run();
   if (!opts.send || !emailConfigured(env)) return 0;
 
-  // Usual share of the day done by now, to scale "usual" in the where-from tables.
-  const fraction = medianOf(hourly.map((h) => sumHours(h, 0, 24))) ? medianOf(history.map((h) => h.today)) / medianOf(hourly.map((h) => sumHours(h, 0, 24))) : 1;
+  // Usual share of the day covered by the window (so far today, or the last three hours), to scale "usual" in the
+  // where-from tables.
+  const dayTotal = medianOf(hourly.map((h) => sumHours(h, 0, 24)));
+  const windowUsual = medianOf(history.map((h) => (found.window === "today" ? h.today : h.last3h)));
+  const fraction = dayTotal ? windowUsual / dayTotal : 1;
   const base = await alertDetail(env, site, { day, kind: found.kind, value: found.value, expected: found.expected }, { fraction });
   const item: AlertDetail = {
     ...base,

@@ -105,8 +105,11 @@ export function describe(a: Pick<Anomaly, "kind" | "value" | "expected" | "day">
 /**
  * Stricter than the nightly rules: a partial day is noisier. Calibrated on 22 real sites over 30 days: about eight
  * alerts a month across all of them (the same rate as the nightly check), each hours earlier than the nightly one.
+ * The burst rule catches a sharp rise in the last three hours that the day so far dilutes (e.g. a pass of the ISS
+ * sending a city's searchers to one page): 4× the usual for those hours, +200 visits and the same z. On the same
+ * data it adds about one alert a month.
  */
-export const INTRADAY_RULES = { ...ANOMALY_RULES, z: 6, spikeRatio: 2.5, dropRatio: 0.4, minDelta: 75 };
+export const INTRADAY_RULES = { ...ANOMALY_RULES, z: 6, spikeRatio: 2.5, dropRatio: 0.4, minDelta: 75, burstRatio: 4, burstMinDelta: 200 };
 /** Spikes and drops only from this local hour (early-morning counts are too small to judge). */
 export const INTRADAY_MIN_HOUR = 6;
 
@@ -128,7 +131,8 @@ function baseline(history: number[]) {
 
 /**
  * Today so far vs the same point on earlier same weekdays (visits, which add up hour by hour). A broken tracker
- * (nothing in the last three hours of a normally busy stretch) is checked first, then a spike or drop in the day so far.
+ * (nothing in the last three hours of a normally busy stretch) is checked first, then a spike or drop in the day so
+ * far, then a burst in the last three hours.
  */
 export function detectIntraday(
   input: { today: number; last3h: number; history: { today: number; last3h: number }[]; hour?: number },
@@ -146,5 +150,11 @@ export function detectIntraday(
   let kind: AnomalyKind | null = null;
   if (score >= rules.z && delta >= rules.minDelta && input.today >= day.expected * rules.spikeRatio) kind = "spike";
   else if (score <= -rules.z && -delta >= rules.minDelta && input.today <= day.expected * rules.dropRatio) kind = "drop";
-  return kind ? { kind, window: "today", value: input.today, expected: Math.round(day.expected), score: Math.round(score * 10) / 10 } : null;
+  if (kind) return { kind, window: "today", value: input.today, expected: Math.round(day.expected), score: Math.round(score * 10) / 10 };
+  // A burst: the last three hours far above the same hours on earlier same weekdays.
+  const burst = (input.last3h - recent.expected) / recent.spread;
+  if (burst >= rules.z && input.last3h - recent.expected >= rules.burstMinDelta && input.last3h >= recent.expected * rules.burstRatio) {
+    return { kind: "spike", window: "last3h", value: input.last3h, expected: Math.round(recent.expected), score: Math.round(burst * 10) / 10 };
+  }
+  return null;
 }
