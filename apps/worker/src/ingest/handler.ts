@@ -81,6 +81,7 @@ export async function ingest(raw: RawEvent, req: Request, env: Env): Promise<voi
       visitor: await visitorId(current, site.id, ip, ua),
       prevVisitor: previous ? await visitorId(previous, site.id, ip, ua) : null,
       via: raw.via,
+      vitals: raw.vitals ?? null,
       session,
     };
     const result = await env.SITE.get(env.SITE.idFromName(String(site.id))).ingest(site.id, ev, capFor(env, site));

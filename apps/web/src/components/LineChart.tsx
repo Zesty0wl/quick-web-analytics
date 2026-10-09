@@ -34,7 +34,7 @@ function niceMax(v: number): number {
 }
 
 const axisFmt = new Intl.NumberFormat("en-GB", { notation: "compact", maximumFractionDigits: 1 });
-const NON_COUNT = new Set<Metric>(["bounce_rate", "scroll_depth", "visit_duration", "time_on_page", "views_per_visit"]);
+const NON_COUNT = new Set<Metric>(["bounce_rate", "scroll_depth", "visit_duration", "time_on_page", "views_per_visit", "inp", "lcp", "cls", "ttfb", "fcp", "inp_delay", "inp_processing", "inp_presentation"]);
 
 const W = 1000;
 const H = 300;

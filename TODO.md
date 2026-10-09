@@ -3,6 +3,29 @@
 Planned work, roughly in order. Tick items off as they land (with the commit or PR), and move finished milestones to
 [CHANGELOG.md](CHANGELOG.md) at release time.
 
+## Agent access (MCP) and first-party Web Vitals
+
+### Stage 1: MCP server
+- [x] Personal access tokens: migration, hashed storage, optional per-site restriction, last used, revoke
+- [x] **Your tokens** page in the dashboard (create, shown once; list; revoke)
+- [x] `/mcp` (Streamable HTTP, stateless JSON-RPC) with token auth; Access bypass for `/mcp`
+- [x] Tools:
+  - [x] list_sites, get_summary, breakdown, timeseries
+  - [x] realtime, anomalies
+  - [x] search_console, speed, speed_test (any page), crux (any URL)
+- [x] Prompts: investigate INP on desktop, what changed this week
+- [x] Rate limits; docs (DEPLOY, AGENTS, README); production bypass; tested end to end against production
+
+### Stage 2: our own Web Vitals
+- [x] Tracker: INP with attribution (target element, interaction type, input delay / processing / presentation), LCP (+ element), CLS, TTFB, FCP; sent with the page's engagement event; stays small
+- [x] Storage: vitals columns in the engagement table (DO + Parquet), read by the query worker
+- [x] Query metrics (p75 INP / LCP / CLS / TTFB, share of good) and dimensions (INP target, LCP element)
+- [x] MCP tool `slow_interactions` and Web Vitals in breakdowns
+- [x] Dashboard: real-visitor vitals in the Speed section (per page, per device)
+
+### Stage 3: OAuth for Claude Desktop and claude.ai
+- [x] OAuth 2.1 (dynamic client registration, PKCE) with the consent page behind Access; shared with the iOS sign-in
+
 ## iOS app
 
 Plan: [docs/mobile/PRD.md](docs/mobile/PRD.md) · API: [docs/mobile/API.md](docs/mobile/API.md).

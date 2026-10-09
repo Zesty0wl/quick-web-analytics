@@ -25,6 +25,17 @@ export function metricValue(metric: Metric, v: number | string | null | undefine
       return duration(n);
     case "views_per_visit":
       return n.toFixed(2);
+    case "inp":
+    case "lcp":
+    case "ttfb":
+    case "fcp":
+    case "inp_delay":
+    case "inp_processing":
+    case "inp_presentation":
+      if (v === null || v === undefined) return "–";
+      return n < 1000 ? `${Math.round(n)} ms` : `${(n / 1000).toFixed(1)} s`;
+    case "cls":
+      return v === null || v === undefined ? "–" : n.toFixed(2);
     default:
       return opts.compact ? compact(n) : whole(n);
   }
@@ -40,6 +51,15 @@ export const METRIC_LABELS: Record<Metric, string> = {
   events: "Events",
   scroll_depth: "Scroll depth",
   time_on_page: "Time on page",
+  inp: "INP",
+  lcp: "LCP",
+  cls: "CLS",
+  ttfb: "TTFB",
+  fcp: "FCP",
+  inp_delay: "Input delay",
+  inp_processing: "Processing",
+  inp_presentation: "Presentation delay",
+  measured_views: "Measured views",
 };
 
 export const DIMENSION_LABELS: Record<Dimension, string> = {
@@ -48,10 +68,11 @@ export const DIMENSION_LABELS: Record<Dimension, string> = {
   country: "Country", region: "Region", city: "City",
   browser: "Browser", browser_version: "Browser version", os: "OS", os_version: "OS version", device: "Device",
   entry_page: "Entry page", exit_page: "Exit page", hostname: "Hostname", page: "Page", event: "Event",
+  inp_target: "Slow interaction on", inp_type: "Interaction", lcp_element: "LCP element",
 };
 
 /** For these metrics a decrease is good news. */
-export const LOWER_IS_BETTER = new Set<Metric>(["bounce_rate"]);
+export const LOWER_IS_BETTER = new Set<Metric>(["bounce_rate", "inp", "lcp", "cls", "ttfb", "fcp", "inp_delay", "inp_processing", "inp_presentation"]);
 
 export function change(current: number, previous: number): number | null {
   if (!previous) return current ? null : 0;

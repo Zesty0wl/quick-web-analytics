@@ -124,7 +124,13 @@ take a minute or two on first deploy, so retry a few times before investigating.
      "domain": "<hostname>/t.js",
      "destinations": [
        { "type": "public", "uri": "<hostname>/t.js" },
-       { "type": "public", "uri": "<hostname>/e" }
+       { "type": "public", "uri": "<hostname>/e" },
+       { "type": "public", "uri": "<hostname>/mcp" },
+       { "type": "public", "uri": "<hostname>/.well-known/oauth-protected-resource" },
+       { "type": "public", "uri": "<hostname>/.well-known/oauth-protected-resource/mcp" },
+       { "type": "public", "uri": "<hostname>/.well-known/oauth-authorization-server" },
+       { "type": "public", "uri": "<hostname>/oauth/register" },
+       { "type": "public", "uri": "<hostname>/oauth/token" }
      ],
      "policies": [{ "name": "Public", "decision": "bypass", "include": [{ "everyone": {} }] }]
    }
@@ -157,6 +163,10 @@ take a minute or two on first deploy, so retry a few times before investigating.
   If the site's code is in a repository you can edit, offer to add it, but ask first.
 - **ASK** them to open `https://<hostname>/`, sign in with the code emailed to them, and confirm the dashboard loads. Their
   first sign-in creates their admin account. **Admin → Sites → Install** shows when the first event arrives.
+
+### Agent access for the person
+
+Once they've signed in, tell them they can connect AI agents under **Account → Agent access**. Claude Desktop and claude.ai connect with a button: add a custom connector with `https://<hostname>/mcp` and approve. For Claude Code, Cursor or Codex, create a token there; the page shows the exact setup command (e.g. `claude mcp add --transport http qwa https://<hostname>/mcp --header "Authorization: Bearer …"`). If you are the agent they'll use for analytics afterwards, ask them to create one and add it to your MCP configuration themselves; don't ask them to paste it into the chat.
 
 ### Phase 5: cost brakes (recommended)
 

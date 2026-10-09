@@ -24,11 +24,12 @@ interface Props {
   onTheme: (t: Theme) => void;
   look: Look;
   onLook: (l: Look) => void;
-  page: "overview" | "site" | "admin";
+  page: "overview" | "site" | "admin" | "account";
   isAdmin: boolean;
   email: string;
   onHome: (e: React.MouseEvent) => void;
   onAdmin: (e: React.MouseEvent) => void;
+  onAccount: (e: React.MouseEvent) => void;
   sections?: { id: string; label: string }[];
 }
 
@@ -90,7 +91,7 @@ export function Header(p: Props) {
           )}
         </div>
         <div className="nav-right">
-          {p.page !== "admin" && (
+          {p.page !== "admin" && p.page !== "account" && (
             <>
               <div className="seg" role="group" aria-label="Date range">
                 {PRESETS.map((o) => (
@@ -111,6 +112,7 @@ export function Header(p: Props) {
             {p.look === "cards" ? <Grid /> : <Cards />}
           </button>
           {p.isAdmin && <a href="/admin" className={p.page === "admin" ? "navtext on" : "navtext"} onClick={p.onAdmin}>Admin</a>}
+          <a href="/account" className={p.page === "account" ? "navtext on" : "navtext"} onClick={p.onAccount} title={`${p.email}: agent access`}>Account</a>
           <a className="navtext" href="/cdn-cgi/access/logout" title={p.email}>Sign out</a>
         </div>
       </nav>

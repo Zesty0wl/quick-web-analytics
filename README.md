@@ -2,7 +2,7 @@
 
 **Lightweight, privacy-friendly web analytics that runs entirely on your own Cloudflare account.**
 
-No cookies, no servers to look after, no per-pageview pricing. A 2 KB tracker, a fast dashboard built around day-by-day change, and per-site sharing with the people who need it.
+No cookies, no servers to look after, no per-pageview pricing. A 3 KB tracker that also measures Core Web Vitals, a fast dashboard built around day-by-day change, and per-site sharing with the people who need it.
 
 ![All sites overview](docs/screenshots/overview-light.png)
 
@@ -20,6 +20,10 @@ No cookies, no servers to look after, no per-pageview pricing. A 2 KB tracker, a
   - **Metrics and chart:** nine metrics, each with its change, and a chart with the comparison period overlaid. Click the chart to zoom into a day, week or month.
   - **Breakdowns:** realtime with a live map, sources and channels, pages (entry and exit too), UTM campaigns, custom events, devices and browsers, countries and cities.
   - **Day-by-day views:** a weekday × hour heatmap, and a day-by-day table with day-over-day and week-over-week change.
+- **Core Web Vitals from real visits:** the tracker measures INP, LCP, CLS, TTFB and FCP on every page view. For slow interactions it records which element was involved and where the time went (input delay, processing, presentation). It works on every site, with no Google account needed, and shows per page, device and browser.
+- **Agent access (MCP):** AI agents can read your analytics through a built-in MCP server. It covers summaries, top pages and sources, trends, realtime, unusual days, Search Console, Core Web Vitals with slow-interaction attribution, and PageSpeed runs on any page.
+  - **Connecting:** Claude Desktop and claude.ai connect with a "Connect" button (OAuth); Claude Code, Cursor and Codex use a personal token.
+  - **Access:** read-only, and can be limited to a few sites.
 - **Google data (optional):** Search Console clicks, impressions, positions and queries on each site's page, plus nightly PageSpeed tests and real-visitor Core Web Vitals from the Chrome UX Report.
 - **Anomaly alerts:** unusual days (spikes, drops, possible outages) are spotted against the same weekday's usual range, hourly for the day so far and nightly for whole days, and marked with an alarm on the chart. Anyone can opt in to an email per site (Cloudflare Email Sending).
 - **Cost brakes:** a daily event limit per site (recording pauses until midnight, admins are emailed), an emergency stop, and guidance for an edge rate limit and billing alerts. Cloudflare has no hard spending cap, so QWA brings its own.

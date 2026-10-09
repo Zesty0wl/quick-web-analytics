@@ -95,6 +95,8 @@ The tracker and event endpoint must stay public. Add a second self-hosted applic
 - **Domain:** your hostname, with these paths (add a domain entry per path):
   - `/t.js`
   - `/e`
+  - `/mcp` (the MCP server for AI agents; it checks its own tokens)
+  - `/.well-known/oauth-protected-resource`, `/.well-known/oauth-protected-resource/mcp`, `/.well-known/oauth-authorization-server`, `/oauth/register` and `/oauth/token` (so MCP apps can sign in; leave `/oauth/authorize` protected)
   - `/api/event` and `/js/*`, only if you'll use Plausible-compatible snippets (see [MIGRATING.md](MIGRATING.md))
 - **Policy:** **Action: Bypass**, **Include: Everyone**
 
@@ -138,7 +140,7 @@ cd ../..
 | `class="qwa-event-name=Signup qwa-event-plan=pro"` | Custom event on click, no JavaScript needed |
 | `localStorage.qwa_ignore = "true"` | Stop tracking yourself in that browser |
 
-The tracker is under 2 KB gzipped, sets no cookies and follows single-page-app navigation automatically.
+The tracker is about 3 KB gzipped, sets no cookies and follows single-page-app navigation automatically. It also measures each page view's Core Web Vitals (INP with the element and interaction behind it, LCP with its element, CLS, TTFB, FCP) using the browser's own performance APIs, and sends them with the page's engagement report. Only element descriptions (tag, id, classes) are sent, never text or form values. Safari doesn't report INP or CLS, so those come from Chrome, Edge and Firefox.
 
 **Allowed hostnames and IP blocklist** (Admin → Sites → Settings): restrict which hostnames may send events for a site (by default any), and drop events from your office IPs or CIDR ranges.
 
@@ -153,6 +155,21 @@ To send email:
 1. In the Cloudflare dashboard, **Email Service → Email Sending → Onboard Domain**, and pick the domain (or a subdomain) to send from. It adds bounce records under `cf-bounce` and a DMARC record. If the domain already has email elsewhere (e.g. Microsoft 365 or Google), review the DMARC record before you confirm, or onboard a subdomain such as `alerts.example.com` instead.
 2. In `apps/worker/wrangler.jsonc`, uncomment `"send_email": [{ "name": "EMAIL" }]` and set `"ALERT_FROM": "Quick Web Analytics <alerts@your-domain>"`.
 3. `npm run deploy`, then **Admin → Alerts → Send me a test email**.
+
+## Agent access (MCP)
+
+QWA includes an MCP server at `https://<your hostname>/mcp`, so AI agents can read your analytics. There are two ways to connect, both read-only and both limited to what the person can see (or fewer sites, if they choose):
+
+- **Connect with a button** (Claude Desktop, claude.ai and other clients that support MCP sign-in): add a custom connector with the `/mcp` address. The app registers itself, opens the dashboard, and the person signs in as usual and approves on a consent page. Connected apps are listed, and can be disconnected, under **Account → Agent access**. This is OAuth 2.1 with PKCE, dynamic client registration, and rotating refresh tokens; reusing an old refresh token revokes the connection.
+- **A personal token** (Claude Code, Cursor, Codex…): each person creates their own under **Account → Agent access**. Tokens can be limited to some sites and can expire. The page shows the exact setup for each client, e.g. for Claude Code:
+
+```sh
+claude mcp add --transport http qwa https://analytics.example.com/mcp --header "Authorization: Bearer qwa_pat_…"
+```
+
+Tools: `list_sites`, `get_summary`, `breakdown` (pages, sources, countries, devices, events… with filters), `timeseries`, `realtime`, `anomalies`, `web_vitals` and `slow_interactions` (Core Web Vitals measured by the QWA tracker, with the elements behind slow interactions), `search_console`, `speed`, `speed_test` (a PageSpeed run on any page) and `crux` (Chrome's real-user Core Web Vitals for any URL). Prompts: `investigate_inp` and `weekly_review`.
+
+`/mcp` and the OAuth discovery, registration and token paths must be in the public-paths Access application (step 5b), since agents can't do the Access sign-in; `/oauth/authorize` must stay protected, because that's where the person signs in. Requests are rate-limited to 60 a minute per token with the `MCP_LIMITER` binding in `wrangler.example.jsonc`.
 
 ## Google data (optional)
 

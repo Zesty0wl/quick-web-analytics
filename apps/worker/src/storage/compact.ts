@@ -18,6 +18,10 @@ export async function mergeTable(table: TableName, sources: MergeSource[]): Prom
 
   for (const src of sources) {
     const metadata = await parquetMetadataAsync(src.file);
+    // Older files may lack columns added since (e.g. Web Vitals): read what's there and fill the rest with defaults.
+    const present = new Set(metadata.schema.map((el) => el.name));
+    const readable = names.filter((n) => present.has(n));
+    const types = Object.fromEntries(COLUMNS[table]);
     let rowStart = 0;
     for (const rg of metadata.row_groups) {
       const rowEnd = rowStart + Number(rg.num_rows);
@@ -25,7 +29,7 @@ export async function mergeTable(table: TableName, sources: MergeSource[]): Prom
       await parquetRead({
         file: src.file,
         metadata,
-        columns: names,
+        columns: readable,
         rowStart,
         rowEnd,
         onChunk: (c) => {
@@ -37,7 +41,10 @@ export async function mergeTable(table: TableName, sources: MergeSource[]): Prom
           for (let i = from; i < to; i++) target.push(data[i]);
         },
       });
-      for (const n of names) cols[n] ??= [];
+      for (const n of names) {
+        if (!present.has(n)) cols[n] = new Array(rowEnd - rowStart).fill(types[n] === "STRING" ? "" : 0);
+        cols[n] ??= [];
+      }
 
       if (src.skip?.length) {
         const t = cols[timeCol];

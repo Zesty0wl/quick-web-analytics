@@ -23,6 +23,8 @@
   // Optional: anomaly alert emails through Cloudflare Email Sending (also set ALERT_FROM below). See docs/DEPLOY.md.
   // "send_email": [{ "name": "EMAIL" }],
   "services": [{ "binding": "QUERY", "service": "qwa-query", "entrypoint": "QueryService" }],
+  // Rate limit for the MCP server (/mcp): 60 requests a minute per token. namespace_id is any number unique in the account.
+  "ratelimits": [{ "name": "MCP_LIMITER", "namespace_id": "1001", "simple": { "limit": 60, "period": 60 } }],
   // CHANGE: the hostname for the dashboard, tracker and API. It must be on a zone in your Cloudflare account.
   "routes": [{ "pattern": "analytics.example.com", "custom_domain": true }],
   "workers_dev": false,

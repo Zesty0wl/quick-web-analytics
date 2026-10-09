@@ -148,4 +148,74 @@ describe("QWA tracker", () => {
     const p = page(undefined, {}, (win) => win.localStorage.setItem("qwa_ignore", "true"));
     expect(p.sent).toHaveLength(0);
   });
+
+  describe("Web Vitals", () => {
+    // A fake PerformanceObserver: observers register by type; tests deliver entries to them.
+    function withPerf(win: any) {
+      const observers: Record<string, ((list: any) => void)[]> = {};
+      class PO {
+        static supportedEntryTypes = ["event", "first-input", "largest-contentful-paint", "layout-shift", "paint"];
+        constructor(private cb: (list: any) => void) {}
+        observe(opts: { type: string }) {
+          (observers[opts.type] ??= []).push(this.cb);
+        }
+      }
+      win.PerformanceObserver = PO;
+      win.__deliver = (type: string, entries: any[]) => (observers[type] ?? []).forEach((cb) => cb({ getEntries: () => entries }));
+    }
+
+    it("reports the slowest interaction with its element and timing breakdown, plus LCP, CLS and FCP", () => {
+      const p = page("https://example.com/start", {}, withPerf);
+      const doc = p.win.document;
+      doc.body.innerHTML = '<nav id="top"><button class="menu toggle big">Menu</button></nav><img class="hero" src="/a.jpg">';
+      const button = doc.querySelector("button");
+      p.win.__deliver("largest-contentful-paint", [{ startTime: 1234.4, element: doc.querySelector("img"), url: "https://example.com/img/hero.jpg?w=800" }]);
+      p.win.__deliver("paint", [{ name: "first-contentful-paint", startTime: 800 }]);
+      p.win.__deliver("layout-shift", [{ value: 0.05, startTime: 1000, hadRecentInput: false }, { value: 0.03, startTime: 1500, hadRecentInput: false }]);
+      p.win.__deliver("event", [
+        { interactionId: 1, name: "pointerdown", duration: 120, startTime: 5000, processingStart: 5010, processingEnd: 5100, target: button },
+        { interactionId: 2, name: "click", duration: 320, startTime: 6000, processingStart: 6080, processingEnd: 6250, target: button },
+        { interactionId: 0, name: "mousemove", duration: 900, startTime: 7000, processingStart: 7000, processingEnd: 7000, target: button },
+      ]);
+      hide(p.win);
+      const e = p.sent.find((s) => s.body.n === "engagement")!.body;
+      expect(e.pv).toBeGreaterThan(0);
+      expect(e.wv).toEqual({ c: 0.08, l: 1234, le: "img.hero (hero.jpg)", f: 800, i: 320, it: "nav#top > button.menu.toggle", ty: "click", d: 80, p: 170, r: 70 });
+    });
+
+    it("names an interaction's element even when it has left the page by the time it's reported", () => {
+      const p = page("https://example.com/start", {}, withPerf);
+      const doc = p.win.document;
+      doc.body.innerHTML = '<ul class="menu"><li><a class="item" href="#">Go</a></li></ul>';
+      const link = doc.querySelector("a");
+      const down = new p.win.Event("pointerdown", { bubbles: true });
+      Object.defineProperty(down, "timeStamp", { value: 4000 });
+      link.dispatchEvent(down);
+      link.remove();
+      p.win.__deliver("event", [{ interactionId: 7, name: "pointerdown", duration: 400, startTime: 4010, processingStart: 4015, processingEnd: 4020, target: null }]);
+      hide(p.win);
+      expect(p.sent.find((s) => s.body.n === "engagement")!.body.wv.it).toBe("ul.menu > li > a.item");
+    });
+
+    it("sends new vitals without re-sending scroll depth, and starts fresh on an SPA navigation", () => {
+      const p = page("https://example.com/start", {}, withPerf);
+      hide(p.win); // nothing measured yet, no engagement: nothing sent
+      const before = p.sent.length;
+      Object.defineProperty(p.win.document, "visibilityState", { value: "visible", configurable: true });
+      p.win.__deliver("event", [{ interactionId: 3, name: "keydown", duration: 200, startTime: 100, processingStart: 150, processingEnd: 250, target: p.win.document.body }]);
+      hide(p.win);
+      const first = p.sent.slice(before).find((s) => s.body.n === "engagement")!.body;
+      expect(first.sd).toBe(0);
+      expect(first.wv.i).toBe(200);
+      p.win.history.pushState(null, "", "/next");
+      p.win.__deliver("largest-contentful-paint", [{ startTime: 3000, element: p.win.document.body }]);
+      p.win.__deliver("event", [{ interactionId: 4, name: "click", duration: 60, startTime: 9000, processingStart: 9001, processingEnd: 9050, target: p.win.document.body }]);
+      hide(p.win);
+      const last = p.sent.filter((s) => s.body.n === "engagement").pop()!.body;
+      expect(last.u).toBe("https://example.com/next");
+      expect(last.pv).not.toBe(first.pv);
+      expect(last.wv.i).toBe(60);
+      expect(last.wv.l).toBeUndefined(); // no LCP for SPA navigations
+    });
+  });
 });

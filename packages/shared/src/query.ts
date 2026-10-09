@@ -1,10 +1,20 @@
 // The QWA query spec: used by the dashboard, the API (/api/v1) and MCP tools.
 
+/**
+ * Web Vitals measured by the QWA tracker, per page view: 75th percentiles in ms (cls unitless), INP's three parts
+ * (p75 of each over page views with an interaction), and how many page views were measured.
+ */
+export const VITAL_METRICS = ["inp", "lcp", "cls", "ttfb", "fcp", "inp_delay", "inp_processing", "inp_presentation", "measured_views"] as const;
+export type VitalMetric = (typeof VITAL_METRICS)[number];
+
 export const METRICS = [
   "visitors", "visits", "pageviews", "views_per_visit", "bounce_rate", "visit_duration",
   "events", "scroll_depth", "time_on_page",
+  ...VITAL_METRICS,
 ] as const;
 export type Metric = (typeof METRICS)[number];
+/** The traffic and engagement metrics (everything except Web Vitals). */
+export const TRAFFIC_METRICS = METRICS.filter((m) => !(VITAL_METRICS as readonly string[]).includes(m)) as Exclude<Metric, VitalMetric>[];
 
 export const SESSION_DIMENSIONS = [
   "source", "channel", "referrer", "utm_source", "utm_medium", "utm_campaign", "utm_content", "utm_term",
@@ -12,8 +22,11 @@ export const SESSION_DIMENSIONS = [
   "entry_page", "exit_page", "hostname",
 ] as const;
 export type SessionDimension = (typeof SESSION_DIMENSIONS)[number];
-export type Dimension = SessionDimension | "page" | "event";
-export const DIMENSIONS: Dimension[] = [...SESSION_DIMENSIONS, "page", "event"];
+/** Web Vitals attribution: the element behind each page view's slowest interaction, its type, and the LCP element. */
+export const VITAL_DIMENSIONS = ["inp_target", "inp_type", "lcp_element"] as const;
+export type VitalDimension = (typeof VITAL_DIMENSIONS)[number];
+export type Dimension = SessionDimension | "page" | "event" | VitalDimension;
+export const DIMENSIONS: Dimension[] = [...SESSION_DIMENSIONS, "page", "event", ...VITAL_DIMENSIONS];
 
 export type TimeGrain = "hour" | "day" | "week" | "month";
 export const TIME_GRAINS: TimeGrain[] = ["hour", "day", "week", "month"];
@@ -39,8 +52,9 @@ export interface QueryResult {
 
 /** Which metrics can be computed for a given grouping. */
 export function allowedMetrics(groupBy: GroupBy | null | undefined): readonly Metric[] {
-  if (groupBy === "page") return ["visitors", "pageviews", "scroll_depth", "time_on_page"];
+  if (groupBy === "page") return ["visitors", "pageviews", "scroll_depth", "time_on_page", ...VITAL_METRICS];
   if (groupBy === "event") return ["visitors", "events"];
+  if ((VITAL_DIMENSIONS as readonly string[]).includes(groupBy ?? "")) return VITAL_METRICS;
   return METRICS;
 }
 

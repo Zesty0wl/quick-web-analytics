@@ -6,6 +6,8 @@ import { Spinner } from "./components/Bits";
 import { Header } from "./components/Header";
 import { SiteSwitcher } from "./components/SiteSwitcher";
 import { compareLabel, comparisonRange, periodLabel, presetRange } from "./dates";
+import { Account } from "./pages/Account";
+import { OAuthConsent } from "./pages/OAuthConsent";
 import { Admin } from "./pages/Admin";
 import { Overview } from "./pages/Overview";
 import { SECTIONS, Site } from "./pages/Site";
@@ -34,9 +36,11 @@ function App() {
     );
   }
   const data = me.data!;
+  // The OAuth consent page stands alone: no dashboard header or date controls.
+  if (url.pathname === "/oauth/authorize") return <main><OAuthConsent me={data} /></main>;
   const isAdmin = data.user.role === "admin";
   const siteState = readSiteState(url);
-  const page = url.pathname.startsWith("/admin") && isAdmin ? "admin" : siteState ? "site" : "overview";
+  const page = url.pathname.startsWith("/admin") && isAdmin ? "admin" : url.pathname.startsWith("/account") ? "account" : siteState ? "site" : "overview";
   const site = siteState ? data.sites.find((s) => s.id === siteState.siteId) : undefined;
 
   const g = readGlobal(url);
@@ -49,7 +53,7 @@ function App() {
   return (
     <>
       <Header
-        crumb={page === "site" && site ? <SiteSwitcher variant="crumb" sites={data.sites} currentId={site.id} url={url} navigate={navigate} dates={{ from, to, cfrom: cmp.from, cto: cmp.to }} /> : page === "admin" ? "Admin" : undefined}
+        crumb={page === "site" && site ? <SiteSwitcher variant="crumb" sites={data.sites} currentId={site.id} url={url} navigate={navigate} dates={{ from, to, cfrom: cmp.from, cto: cmp.to }} /> : page === "admin" ? "Admin" : page === "account" ? "Account" : undefined}
         range={g.range}
         from={from}
         to={to}
@@ -65,10 +69,13 @@ function App() {
         email={data.user.email}
         onHome={linkHandler(navigate, home)}
         onAdmin={linkHandler(navigate, "/admin")}
+        onAccount={linkHandler(navigate, "/account")}
         sections={page === "site" && site ? SECTIONS : undefined}
       />
       <main>
-        {page === "admin" ? (
+        {page === "account" ? (
+          <Account me={data} />
+        ) : page === "admin" ? (
           <Admin me={data} palette={appearance.palette} onPalette={appearance.setPalette} />
         ) : page === "site" ? (
           <Site me={data} url={url} navigate={navigate} dates={{ from, to }} compare={g.compare} periodText={periodText} cmpText={cmpText} />

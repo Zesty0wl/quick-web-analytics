@@ -1,5 +1,7 @@
 import { Hono } from "hono";
 import { api } from "./api";
+import { handleMcp } from "./mcp";
+import { authorizationServerMetadata, preflight, protectedResourceMetadata, register, token } from "./oauth";
 import { serveCompatScript } from "./compat/scripts";
 import type { Env } from "./env";
 import { corsPreflight, handlePlausibleEvent, handleQwaEvent } from "./ingest/handler";
@@ -81,6 +83,23 @@ app.use("*", async (c, next) => {
   await next();
 });
 
+// MCP server for AI agents (token-authenticated; the path is in the Access bypass application).
+app.all("/mcp", (c) => handleMcp(c.req.raw, c.env, c.executionCtx as ExecutionContext));
+// OAuth for MCP clients that "Connect" (oauth.ts). These paths are in the Access bypass; /oauth/authorize isn't.
+app.on(["GET", "OPTIONS"], ["/.well-known/oauth-protected-resource", "/.well-known/oauth-protected-resource/mcp"], (c) => (c.req.method === "OPTIONS" ? preflight() : protectedResourceMetadata(c.env, c.req.raw)));
+app.on(["GET", "OPTIONS"], "/.well-known/oauth-authorization-server", (c) => (c.req.method === "OPTIONS" ? preflight() : authorizationServerMetadata(c.env, c.req.raw)));
+app.options("/oauth/register", () => preflight());
+app.post("/oauth/register", (c) => register(c.req.raw, c.env));
+app.options("/oauth/token", () => preflight());
+app.post("/oauth/token", (c) => token(c.req.raw, c.env));
+// The consent page is the dashboard SPA; never let it be framed (clickjacking).
+app.get("/oauth/authorize", async (c) => {
+  const res = await c.env.ASSETS.fetch(new Request(new URL("/", c.req.url), c.req.raw));
+  const out = new Response(res.body, res);
+  out.headers.set("x-frame-options", "DENY");
+  out.headers.set("content-security-policy", "frame-ancestors 'none'");
+  return out;
+});
 app.route("/api", api);
 app.get("/_compat/*", (c) => c.text("Not found", 404));
 app.get("/_tracker/*", (c) => c.text("Not found", 404));

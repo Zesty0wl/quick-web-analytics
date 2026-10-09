@@ -6,7 +6,7 @@
 // the site's Durable Object like real events, so every part of the dashboard has data.
 import { dayKey, monthKey, TABLES, type TableName } from "@qwa/shared";
 import type { Env, Site } from "./env";
-import type { SessionAttrs, SiteEvent } from "./ingest/types";
+import type { SessionAttrs, SiteEvent, Vitals } from "./ingest/types";
 import { invalidateSites } from "./sites";
 import { emptyColumns, TableWriter } from "./storage/parquet";
 
@@ -207,6 +207,43 @@ function makeSession(p: Profile, r: Rand, start: number, visitor: number): GenSe
   return { attrs, visitor, session: id53(r), start, views, events };
 }
 
+// ---------- Web Vitals ----------
+
+const DEMO_TARGETS = ["nav > button.menu-toggle", "button.add-to-cart", "input#search", "div.filters > button.chip", "a.card-link", "form#signup > button.submit"];
+const DEMO_LCP = ["img.hero (hero.jpg)", "h1.page-title", "main > img.cover (cover.webp)", "div.banner > p.lede"];
+
+/**
+ * Plausible Web Vitals for one page view, from its own random stream (so adding them didn't change the rest of the
+ * demo). Phones are slower, a few pages are consistently heavy, and Safari can't measure INP or CLS.
+ */
+function demoVitals(seed: number, attrs: SessionAttrs, path: string): Vitals {
+  const r = rng(seed);
+  const mobile = attrs.device !== "Desktop";
+  const safari = attrs.browser === "Safari" || attrs.browser === "Mobile Safari";
+  const h = Math.abs(hash(path));
+  const heavy = h % 7 === 0 ? 2.4 : h % 7 === 1 ? 1.6 : 1;
+  const ln = (median: number, spread: number) => median * Math.exp(normal(r) * spread);
+  const inp = !safari && r() < 0.7 ? Math.round(ln(mobile ? 150 : 75, 0.55) * heavy) : 0;
+  const ttfb = Math.round(ln(mobile ? 520 : 320, 0.4));
+  const lcp = Math.round(ttfb + ln(mobile ? 1700 : 950, 0.35) * Math.sqrt(heavy));
+  return {
+    pv: Math.floor(r() * 9e15) + 1,
+    inp,
+    inp_target: inp ? DEMO_TARGETS[(h + (r() < 0.75 ? 0 : 1 + Math.floor(r() * 3))) % DEMO_TARGETS.length] : "",
+    inp_type: inp ? (r() < 0.8 ? "click" : r() < 0.5 ? "keydown" : "pointerdown") : "",
+    inp_delay: inp ? Math.round(inp * (0.1 + r() * 0.2)) : 0,
+    inp_processing: inp ? Math.round(inp * (0.45 + r() * 0.2)) : 0,
+    inp_presentation: 0,
+    lcp,
+    lcp_element: DEMO_LCP[h % DEMO_LCP.length],
+    cls: safari ? -1 : r() < 0.55 ? 0 : Math.min(800, Math.round(ln(0.04, 0.9) * heavy * 1000)),
+    ttfb,
+    fcp: Math.round(ttfb + ln(mobile ? 900 : 550, 0.3)),
+  };
+}
+const withPresentation = (v: Vitals): Vitals => (v.inp ? { ...v, inp_presentation: Math.max(0, v.inp - v.inp_delay - v.inp_processing) } : v);
+const viewVitals = (s: GenSession, i: number) => withPresentation(demoVitals(Number(BigInt.asUintN(31, BigInt(s.session))) ^ (i * 7919), s.attrs, s.views[i].path));
+
 /** All sessions starting on local day `day` (deterministic per site and day). */
 function daySessions(p: Profile, day: string, ago: number): GenSession[] {
   const r = rng(hash(`${p.domain}|${day}`));
@@ -245,10 +282,10 @@ function addRows(bufAt: (ts: number) => Record<TableName, Cols>, domain: string,
     for (const [k, list] of Object.entries(bufAt(ts)[t])) list.push(r[k] ?? "");
   };
   push("sessions", s.start, row);
-  for (const v of s.views) {
+  s.views.forEach((v, i) => {
     push("pageviews", v.ts, { ts: v.ts, session: s.session, visitor: s.visitor, hostname: domain, path: v.path, props: "" });
-    push("engagement", v.ts + v.dwell, { ts: v.ts + v.dwell, session: s.session, visitor: s.visitor, path: v.path, scroll_depth: v.scroll, engaged_ms: Math.round(v.dwell * 700) });
-  }
+    push("engagement", v.ts + v.dwell, { ts: v.ts + v.dwell, session: s.session, visitor: s.visitor, path: v.path, scroll_depth: v.scroll, engaged_ms: Math.round(v.dwell * 700), ...viewVitals(s, i) });
+  });
   for (const e of s.events) push("custom", e.ts, { ts: e.ts, session: s.session, visitor: s.visitor, name: e.name, path: e.path, props: e.props });
 }
 
@@ -348,10 +385,10 @@ export async function seedHistory(env: Env, site: Site): Promise<number> {
 function toEvents(siteDomain: string, s: GenSession, until: number): SiteEvent[] {
   const evs: SiteEvent[] = [];
   const base = { hostname: siteDomain, visitor: s.visitor, prevVisitor: null, via: "qwa" as const, session: s.attrs, props: {} as Record<string, string> };
-  for (const v of s.views) {
+  s.views.forEach((v, i) => {
     if (v.ts <= until) evs.push({ ...base, ts: v.ts, kind: "pageview", name: "pageview", path: v.path, scrollDepth: null, engagedMs: null, interactive: true });
-    if (v.ts + v.dwell <= until) evs.push({ ...base, ts: v.ts + v.dwell, kind: "engagement", name: "engagement", path: v.path, scrollDepth: v.scroll, engagedMs: Math.round(v.dwell * 700), interactive: false });
-  }
+    if (v.ts + v.dwell <= until) evs.push({ ...base, ts: v.ts + v.dwell, kind: "engagement", name: "engagement", path: v.path, scrollDepth: v.scroll, engagedMs: Math.round(v.dwell * 700), interactive: false, vitals: viewVitals(s, i) });
+  });
   for (const e of s.events) {
     if (e.ts <= until) evs.push({ ...base, ts: e.ts, kind: "custom", name: e.name, path: e.path, props: e.props ? JSON.parse(e.props) : {}, scrollDepth: null, engagedMs: null, interactive: e.name !== "404" });
   }

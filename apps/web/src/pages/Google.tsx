@@ -2,7 +2,7 @@
 // lab tests plus the Chrome UX Report's real-user Core Web Vitals).
 import { useMemo, useState } from "react";
 import { useMutation, useQueryClient } from "@tanstack/react-query";
-import { api, useSearch, useSearchRows, useSpeed, type CruxHistory, type SearchDay, type SearchDim, type SearchTotals, type SpeedRun } from "../api";
+import { api, useSearch, useSearchRows, useSpeed, useStats, type CruxHistory, type SearchDay, type SearchDim, type SearchTotals, type SpeedRun } from "../api";
 import { Busy, busyOf, Spark, Spinner } from "../components/Bits";
 import { Close, External } from "../components/Icons";
 import { LineChart } from "../components/LineChart";
@@ -235,7 +235,8 @@ const status = (v: Vital, x: number): Status => (x <= LIMITS[v][0] ? "good" : x 
 const scoreStatus = (s: number): Status => (s >= 90 ? "good" : s >= 50 ? "ni" : "poor");
 const vfmt = (v: Vital, x: number) => (v === "cls" ? x.toFixed(2) : x < 1000 ? `${Math.round(x)} ms` : `${(x / 1000).toFixed(1)} s`);
 
-function StatusTag({ s, text }: { s: Status; text?: string }) {
+function StatusTag({ s, text, dot }: { s: Status; text?: string; dot?: boolean }) {
+  if (dot) return <span className={`vital vital-${s}`} title={STATUS_LABEL[s]} role="img" aria-label={STATUS_LABEL[s]}><i aria-hidden /></span>;
   return <span className={`vital vital-${s}`}><i aria-hidden />{text ?? STATUS_LABEL[s]}</span>;
 }
 
@@ -285,10 +286,106 @@ const VERDICT: Record<string, { s: Status; text: string }> = {
 export function SpeedSection({ c, admin }: { c: Ctx; admin: boolean }) {
   const [strategy, setStrategy] = useState<"mobile" | "desktop">("mobile");
   return (
-    <Section id="s-speed" title="Speed" sub="Home page, from Google PageSpeed Insights and real Chrome users"
+    <Section id="s-speed" title="Speed" sub="Core Web Vitals from real visits, plus Google PageSpeed Insights"
       right={<Seg value={strategy} options={[{ id: "mobile", label: "Mobile" }, { id: "desktop", label: "Desktop" }]} onChange={setStrategy} />}>
-      {(visible) => <SpeedBody c={c} admin={admin} strategy={strategy} visible={visible} />}
+      {(visible) => (
+        <>
+          <RealVisitors c={c} strategy={strategy} visible={visible} />
+          <h4 className="speed-sub">Google's view</h4>
+          <SpeedBody c={c} admin={admin} strategy={strategy} visible={visible} />
+        </>
+      )}
     </Section>
+  );
+}
+
+type Row = Record<string, string | number | null>;
+const num = (v: unknown) => (v === null || v === undefined ? null : Number(v));
+
+/** Web Vitals the QWA tracker measured on real visits, for the period and device, with attribution. */
+function RealVisitors({ c, strategy, visible }: { c: Ctx; strategy: "mobile" | "desktop"; visible: boolean }) {
+  const device = strategy === "mobile" ? "Mobile" : "Desktop";
+  const filters = [...c.filters.filter((f) => f[0] !== "device"), ["device", "is", device] as Ctx["filters"][number]];
+  const base = { from: c.from, to: c.to, filters };
+  const totals = useStats(c.siteId, { ...base, metrics: ["measured_views", "inp", "lcp", "cls", "ttfb", "fcp", "inp_delay", "inp_processing", "inp_presentation"] }, visible);
+  const targets = useStats(c.siteId, { ...base, metrics: ["measured_views", "inp", "inp_delay", "inp_processing", "inp_presentation"], groupBy: "inp_target", limit: 6 }, visible);
+  const pages = useStats(c.siteId, { ...base, metrics: ["measured_views", "inp", "lcp", "cls"], groupBy: "page", limit: 8 }, visible);
+  const t = (totals.data?.rows[0] ?? {}) as Row;
+  const measured = Number(t.measured_views ?? 0);
+  const tRows = (targets.data?.rows ?? []) as Row[];
+  const pRows = ((pages.data?.rows ?? []) as Row[]).filter((r) => Number(r.measured_views) > 0);
+  const tag = (v: Vital, x: unknown) => (num(x) === null ? null : <StatusTag s={status(v, Number(x))} dot />);
+
+  return (
+    <Busy busy={busyOf(totals, targets, pages)} minHeight={200}>
+      {!totals.data ? null : !measured ? (
+        <div className="empty">
+          No Web Vitals measured on {device.toLowerCase()} in this period yet. The QWA tracker measures them on every page view from 9 October 2026 (Safari doesn't report INP or CLS); sites still on the old Plausible script aren't measured.
+        </div>
+      ) : (
+        <div className="cells" style={{ gridTemplateColumns: "repeat(auto-fit, minmax(min(100%, 340px), 1fr))" }}>
+          <div className="cell">
+            <h6>Real visits · measured by QWA · {measured.toLocaleString("en-GB")} {device.toLowerCase()} page views</h6>
+            <div style={{ marginTop: "var(--space-3)" }}>
+              <VitalRow v="inp" x={num(t.inp)} big />
+              <VitalRow v="lcp" x={num(t.lcp)} big />
+              <VitalRow v="cls" x={num(t.cls)} big />
+              <div className="vminor">
+                <VitalRow v="ttfb" x={num(t.ttfb)} />
+                <VitalRow v="fcp" x={num(t.fcp)} />
+              </div>
+            </div>
+            {num(t.inp) !== null && (
+              <p className="muted" style={{ fontSize: 12, marginTop: "var(--space-3)" }}>
+                Where slow interactions spend their time (p75): input delay {vfmt("inp", Number(t.inp_delay ?? 0))}, processing {vfmt("inp", Number(t.inp_processing ?? 0))}, presentation {vfmt("inp", Number(t.inp_presentation ?? 0))}.
+              </p>
+            )}
+          </div>
+          <div className="cell">
+            <h6>Slowest interactions · what visitors were using</h6>
+            {tRows.length ? (
+              <table className="table compact" style={{ marginTop: "var(--space-3)" }}>
+                <thead><tr><th>Element</th><th className="num">Views</th><th className="num">INP</th><th className="num" title="Input delay / processing / presentation">Delay · Proc · Pres</th></tr></thead>
+                <tbody>
+                  {tRows.map((r) => (
+                    <tr key={String(r.inp_target)}>
+                      <td className="mono" title={String(r.inp_target)} style={{ maxWidth: 220, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{String(r.inp_target) || "(removed element)"}</td>
+                      <td className="num">{compact(Number(r.measured_views))}</td>
+                      <td className="num">{vfmt("inp", Number(r.inp))} {tag("inp", r.inp)}</td>
+                      <td className="num muted">{[r.inp_delay, r.inp_processing, r.inp_presentation].map((x) => vfmt("inp", Number(x ?? 0))).join(" · ")}</td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            ) : (
+              <p className="muted" style={{ fontSize: 13, marginTop: "var(--space-3)" }}>No interactions measured.</p>
+            )}
+            <p className="muted" style={{ fontSize: 12, marginTop: "var(--space-3)" }}>Input delay: the page was busy before the handler ran. Processing: the handler itself. Presentation: drawing the result.</p>
+          </div>
+        </div>
+      )}
+      {totals.data && measured > 0 && pRows.length > 0 && (
+        <div className="cells" style={{ marginTop: 2 }}>
+            <div className="cell">
+              <h6>By page · busiest first</h6>
+              <table className="table compact" style={{ marginTop: "var(--space-3)" }}>
+                <thead><tr><th>Page</th><th className="num">Views measured</th><th className="num">INP</th><th className="num">LCP</th><th className="num">CLS</th></tr></thead>
+                <tbody>
+                  {pRows.map((r) => (
+                    <tr key={String(r.page)} className="clickable" onClick={() => c.addFilter(["page", "is", String(r.page)])} title={`Filter: Page is ${r.page}`}>
+                      <td className="mono">{String(r.page)}</td>
+                      <td className="num">{compact(Number(r.measured_views))}</td>
+                      <td className="num">{num(r.inp) === null ? "–" : vfmt("inp", Number(r.inp))} {tag("inp", r.inp)}</td>
+                      <td className="num">{num(r.lcp) === null ? "–" : vfmt("lcp", Number(r.lcp))} {tag("lcp", r.lcp)}</td>
+                      <td className="num">{num(r.cls) === null ? "–" : vfmt("cls", Number(r.cls))} {tag("cls", r.cls)}</td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+        </div>
+      )}
+    </Busy>
   );
 }
 

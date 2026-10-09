@@ -39,7 +39,7 @@ Each event goes through these steps:
    - IPs and user agents are never stored.
 6. **Sessionise** in the site's Durable Object.
    - A session ends after 30 minutes without activity. It records entry and exit page, pageviews, bounce and duration.
-   - Engagement pings (scroll depth, time on page) extend a session but never start one.
+   - Engagement pings (scroll depth, time on page, and Web Vitals from the QWA tracker) extend a session but never start one.
 
 One Durable Object per site keeps ingestion simple and strongly consistent. A single object handles about 1,000 requests a second, far beyond what a typical site sends.
 
@@ -55,6 +55,9 @@ tables: sessions · pageviews · engagement · custom
 ```
 
 - **One file per event type.** Most reports read only one of them.
+- **Web Vitals live on the engagement table.** These are INP and its attribution, LCP and its element, CLS, TTFB and FCP, plus `pv`, a page-view id.
+  - A page view can report more than once, so queries take each page view's latest report, then 75th percentiles.
+  - Files written before these columns existed are read with `union_by_name`, and compaction fills the missing columns with defaults.
 - **Sorted by time, 256k-row groups.** DuckDB skips row groups outside the date range.
 - **Month files after compaction.** A 12-month query reads about 12 files per table, not 365.
   - Compaction streams one row group at a time and is idempotent.

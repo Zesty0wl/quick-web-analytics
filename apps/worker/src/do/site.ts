@@ -3,7 +3,7 @@
 import { DurableObject } from "cloudflare:workers";
 import { COLUMNS, dayKey, monthKey, TABLES, tablePrefix, type TableName } from "@qwa/shared";
 import type { Env } from "../env";
-import type { SiteEvent } from "../ingest/types";
+import type { SiteEvent, Vitals } from "../ingest/types";
 import { emptyColumns, TableWriter } from "../storage/parquet";
 import { mergeTable, r2Buffer, type MergeSource } from "../storage/compact";
 import { randomId, utcDay } from "../ingest/visitor";
@@ -11,6 +11,11 @@ import { randomId, utcDay } from "../ingest/visitor";
 const SESSION_TIMEOUT_S = 30 * 60;
 const FLUSH_INTERVAL_MS = 5 * 60 * 1000;
 const LOCAL_RETENTION_S = 3 * 86_400;
+/** Web Vitals columns on the local events table (engagement events), matching the engagement Parquet columns. */
+const VITAL_EVENT_COLUMNS: [keyof Vitals, "INTEGER" | "TEXT"][] = [
+  ["pv", "INTEGER"], ["inp", "INTEGER"], ["inp_target", "TEXT"], ["inp_type", "TEXT"], ["inp_delay", "INTEGER"], ["inp_processing", "INTEGER"],
+  ["inp_presentation", "INTEGER"], ["lcp", "INTEGER"], ["lcp_element", "TEXT"], ["cls", "INTEGER"], ["ttfb", "INTEGER"], ["fcp", "INTEGER"],
+];
 
 const SESSION_COLS = COLUMNS.sessions.map(([c]) => c);
 
@@ -71,6 +76,9 @@ export class SiteDO extends DurableObject<Env> {
         CREATE INDEX IF NOT EXISTS events_ts ON events(ts);
       `);
     }
+    // Web Vitals on engagement events (added October 2026): add any missing columns in place.
+    const have = new Set(this.sql.exec<{ name: string }>("PRAGMA table_info(events)").toArray().map((c) => c.name));
+    for (const [name, type] of VITAL_EVENT_COLUMNS) if (!have.has(name)) this.sql.exec(`ALTER TABLE events ADD COLUMN ${name} ${type} NOT NULL DEFAULT ${type === "TEXT" ? "''" : "0"}`);
   }
 
   private meta(key: string): string | null {
@@ -189,11 +197,14 @@ export class SiteDO extends DurableObject<Env> {
       );
     }
 
+    const v = ev.kind === "engagement" ? ev.vitals : null;
     this.sql.exec(
-      "INSERT INTO events (ts, kind, name, hostname, path, visitor, session, props, scroll_depth, engaged_ms, via) VALUES (?,?,?,?,?,?,?,?,?,?,?)",
+      `INSERT INTO events (ts, kind, name, hostname, path, visitor, session, props, scroll_depth, engaged_ms, via, ${VITAL_EVENT_COLUMNS.map(([c]) => c).join(", ")})
+       VALUES (?,?,?,?,?,?,?,?,?,?,?, ${VITAL_EVENT_COLUMNS.map(() => "?").join(",")})`,
       ev.ts, ev.kind, ev.name, ev.hostname, ev.path, ev.visitor, sessionId,
       Object.keys(ev.props).length ? JSON.stringify(ev.props) : "",
       ev.scrollDepth ?? 0, ev.engagedMs ?? 0, ev.via,
+      ...VITAL_EVENT_COLUMNS.map(([c, type]) => (v ? v[c] : type === "TEXT" ? "" : 0)),
     );
 
     this.markDirty(eventDay);

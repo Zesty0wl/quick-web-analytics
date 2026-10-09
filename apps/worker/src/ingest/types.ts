@@ -13,6 +13,24 @@ export interface RawEvent {
   engagedMs: number | null;
   /** Which front door the event came through, e.g. "plausible" (compat) or "qwa". */
   via: "plausible" | "qwa";
+  /** Web Vitals for the page view (QWA tracker engagement events only). */
+  vitals?: Vitals | null;
+}
+
+/** A page view's Web Vitals, as measured by the QWA tracker. Times in ms; cls is CLS × 1000. 0 / "" = not measured. */
+export interface Vitals {
+  pv: number;
+  inp: number;
+  inp_target: string;
+  inp_type: string;
+  inp_delay: number;
+  inp_processing: number;
+  inp_presentation: number;
+  lcp: number;
+  lcp_element: string;
+  cls: number;
+  ttfb: number;
+  fcp: number;
 }
 
 /** Fully enriched event, as handed to the site's Durable Object. */
@@ -29,6 +47,7 @@ export interface SiteEvent {
   visitor: number;
   prevVisitor: number | null;
   via: "plausible" | "qwa";
+  vitals?: Vitals | null;
   session: SessionAttrs;
 }
 

@@ -16,6 +16,18 @@ All notable changes to Quick Web Analytics. Dates are UTC. Database changes ship
   - Lighthouse score with its history, lab metrics and the biggest suggested fixes
   - real Chrome visitors' Core Web Vitals (LCP, INP, CLS) against Google's thresholds, and a six-month weekly trend
   - admins can test on demand
+- **Core Web Vitals measured by QWA itself** on every page view, on every site, with no Google account needed:
+  - **What's measured:** INP, LCP, CLS, TTFB and FCP. For INP, the element behind the slowest interaction (e.g. `nav > button.menu-toggle`), the interaction type, and its input delay, processing and presentation times. For LCP, the element (and image file name). Only element descriptions are sent, never text.
+  - **Queries:** new metrics (p75 `inp`, `lcp`, `cls`, `ttfb`, `fcp`, the three INP parts, `measured_views`) and dimensions (`inp_target`, `inp_type`, `lcp_element`).
+  - **Dashboard:** the Speed section leads with real visits: p75s against Google's thresholds, the slowest interactions, and pages busiest first. It switches between mobile and desktop and follows the date range and filters.
+  - **Agents:** new MCP tools `web_vitals` and `slow_interactions`; `get_summary` includes Web Vitals; the `investigate_inp` prompt starts from this data.
+  - **Tracker size:** grows from about 2 KB to 3 KB gzipped.
+- **Agent access (MCP)** at `/mcp`, so AI agents can read your analytics:
+  - **Tokens:** personal access tokens, created under the new **Account → Agent access** page. They're read-only, can be limited to some sites, can expire, and show when they were last used. The page has setup snippets for Claude Code, Cursor and Codex.
+  - **Tools:** `list_sites`, `get_summary`, `breakdown`, `timeseries`, `realtime`, `anomalies`, `search_console`, `speed`, `speed_test` (PageSpeed on any page) and `crux` (Chrome's real-user Core Web Vitals for any URL).
+  - **Prompts:** `investigate_inp` and `weekly_review`.
+  - **Numbers:** tools use the dashboard's own routes as the token's owner, so they always match.
+  - **OAuth sign-in** for clients that "Connect", such as Claude Desktop and claude.ai custom connectors. This is the MCP authorization spec: protected-resource and authorization-server metadata, dynamic client registration, PKCE (S256), rotating refresh tokens with reuse detection, and a consent page behind your normal sign-in where you can limit the connection to some sites. Connected apps are listed under Account → Agent access, and can be disconnected there.
 - **Admin → Google:** guided setup in the browser:
   - links to turn on the APIs and create the service account
   - upload its key file and paste the API key, each checked with Google before it's saved
@@ -48,7 +60,9 @@ All notable changes to Quick Web Analytics. Dates are UTC. Database changes ship
 ### Upgrade notes
 
 - **Add the Scheduler to `apps/worker/wrangler.jsonc`** (see `wrangler.example.jsonc`). Add `{ "name": "SCHEDULER", "class_name": "Scheduler" }` to `durable_objects.bindings`, add `{ "tag": "v2", "new_sqlite_classes": ["Scheduler"] }` to `migrations`, and remove `"10 * * * *"` from `triggers.crons`.
-- Apply migrations `0007_google` (adds `sites.gsc_property` and the `speed_runs` table) and `0008_settings` (credentials saved from the dashboard).
+- Apply migrations `0007_google` (adds `sites.gsc_property` and the `speed_runs` table), `0008_settings` (credentials saved from the dashboard), `0009_api_tokens` and `0010_oauth`.
+- **Deploy both Workers** (`npm run deploy`): the query Worker reads the new Web Vitals columns. Older Parquet files keep working as they are.
+- **Add `<hostname>/mcp`, `/.well-known/oauth-protected-resource`, `/.well-known/oauth-protected-resource/mcp`, `/.well-known/oauth-authorization-server`, `/oauth/register` and `/oauth/token` to the public-paths (bypass) Access application,** and the `MCP_LIMITER` rate-limit binding from `wrangler.example.jsonc`.
 
 ## [0.2.0] - 2026-10-09
 

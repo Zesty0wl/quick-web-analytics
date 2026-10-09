@@ -47,6 +47,8 @@ export interface Env {
   DEFAULT_DAILY_CAP?: string;
   /** "1" = emergency stop: accept and discard every tracking event without touching storage. */
   INGEST_PAUSED?: string;
+  /** Optional rate limiter for /mcp (60 requests a minute per token). See wrangler.example.jsonc. */
+  MCP_LIMITER?: RateLimit;
   /** Google Search Console: a service account's JSON key (add its email as a Restricted user on each property). */
   GOOGLE_SERVICE_ACCOUNT?: string;
   /** Google API key for PageSpeed Insights and the Chrome UX Report (restrict it to those two APIs). */

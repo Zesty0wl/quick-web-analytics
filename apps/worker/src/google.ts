@@ -295,7 +295,14 @@ export async function pageSpeed(env: Env, url: string, strategy: Strategy): Prom
   if (!k) throw new GoogleError("PageSpeed isn't connected", 503);
   const qs = new URLSearchParams({ url, strategy, category: "performance", key: k.key });
   const res = await fetch(`https://pagespeedonline.googleapis.com/pagespeedonline/v5/runPagespeed?${qs}`);
-  const j = (await res.json()) as {
+  const text = await res.text();
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(text);
+  } catch {
+    throw new GoogleError(`PageSpeed: HTTP ${res.status}${res.status === 524 || res.status === 504 ? " (Lighthouse timed out on this page)" : ""}`, 502);
+  }
+  const j = parsed as {
     error?: { message?: string };
     lighthouseResult?: { categories?: { performance?: { score?: number | null } }; audits?: Record<string, Audit> };
     loadingExperience?: Experience & { origin_fallback?: boolean };
@@ -358,6 +365,60 @@ export async function cruxHistory(env: Env, origin: string, formFactor: "PHONE" 
     inp: series("interaction_to_next_paint"),
     cls: series("cumulative_layout_shift"),
   };
+}
+
+export interface CruxMetric {
+  /** 75th percentile (ms; CLS unitless). */
+  p75: number | null;
+  /** Share of page loads in Google's good / needs improvement / poor bands, 0–1. */
+  good: number;
+  needsImprovement: number;
+  poor: number;
+}
+
+export interface CruxRecord {
+  /** What the data covers: the exact URL, or the whole origin. */
+  key: { url?: string; origin?: string; formFactor?: string };
+  /** The 28-day collection window. */
+  period: { first: string; last: string };
+  metrics: Partial<Record<"inp" | "lcp" | "cls" | "fcp" | "ttfb", CruxMetric>>;
+}
+
+const CRUX_METRICS: Record<string, "inp" | "lcp" | "cls" | "fcp" | "ttfb"> = {
+  interaction_to_next_paint: "inp",
+  largest_contentful_paint: "lcp",
+  cumulative_layout_shift: "cls",
+  first_contentful_paint: "fcp",
+  experimental_time_to_first_byte: "ttfb",
+};
+
+/** The Chrome UX Report's current 28-day record for a URL or an origin; null when Chrome has too little data for it. */
+export async function cruxRecord(env: Env, target: { url: string } | { origin: string }, formFactor?: "PHONE" | "DESKTOP" | "TABLET"): Promise<CruxRecord | null> {
+  const k = await apiKey(env);
+  if (!k) throw new GoogleError("PageSpeed / Chrome UX Report isn't connected", 503);
+  const body = { ...target, ...(formFactor ? { formFactor } : {}), metrics: Object.keys(CRUX_METRICS) };
+  type Rec = { record?: { key: CruxRecord["key"]; collectionPeriod?: { firstDate: { year: number; month: number; day: number }; lastDate: { year: number; month: number; day: number } }; metrics?: Record<string, { histogram?: { density?: number }[]; percentiles?: { p75?: number | string } }> } };
+  let j: Rec;
+  try {
+    j = await cachedJson<Rec>(`cruxrec:${JSON.stringify(body)}`, 12 * 3600, () =>
+      fetch(`https://chromeuxreport.googleapis.com/v1/records:queryRecord?key=${encodeURIComponent(k.key)}`, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify(body) }),
+    );
+  } catch (e) {
+    if (e instanceof GoogleError && e.status === 404) return null;
+    throw e;
+  }
+  const r = j.record;
+  if (!r) return null;
+  const d = (x?: { year: number; month: number; day: number }) => (x ? `${x.year}-${String(x.month).padStart(2, "0")}-${String(x.day).padStart(2, "0")}` : "");
+  const metrics: CruxRecord["metrics"] = {};
+  for (const [name, m] of Object.entries(r.metrics ?? {})) {
+    const id = CRUX_METRICS[name];
+    if (!id) continue;
+    const h = m.histogram ?? [];
+    const p75 = m.percentiles?.p75;
+    metrics[id] = { p75: p75 === undefined ? null : Number(p75), good: h[0]?.density ?? 0, needsImprovement: h[1]?.density ?? 0, poor: h[2]?.density ?? 0 };
+  }
+  return { key: r.key, period: { first: d(r.collectionPeriod?.firstDate), last: d(r.collectionPeriod?.lastDate) }, metrics };
 }
 
 // ---------------------------------------------------------------------------------------------------------

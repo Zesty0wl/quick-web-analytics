@@ -21,9 +21,20 @@ export const COLUMNS: Record<TableName, [string, ColumnType][]> = {
     ["browser", "STRING"], ["browser_version", "STRING"], ["os", "STRING"], ["os_version", "STRING"], ["device", "STRING"],
   ],
   pageviews: [["ts", "INT64"], ["session", "INT64"], ["visitor", "INT64"], ["hostname", "STRING"], ["path", "STRING"], ["props", "STRING"]],
-  engagement: [["ts", "INT64"], ["session", "INT64"], ["visitor", "INT64"], ["path", "STRING"], ["scroll_depth", "INT32"], ["engaged_ms", "INT32"]],
+  // Engagement rows also carry the page view's Web Vitals, measured by the QWA tracker (0 / "" when not measured;
+  // files written before October 2026 don't have these columns at all). `pv` identifies the page view, since a page
+  // view can report more than once (e.g. the tab is hidden, then shown again): take the latest values per pv.
+  engagement: [
+    ["ts", "INT64"], ["session", "INT64"], ["visitor", "INT64"], ["path", "STRING"], ["scroll_depth", "INT32"], ["engaged_ms", "INT32"],
+    ["pv", "INT64"],
+    ["inp", "INT32"], ["inp_target", "STRING"], ["inp_type", "STRING"], ["inp_delay", "INT32"], ["inp_processing", "INT32"], ["inp_presentation", "INT32"],
+    ["lcp", "INT32"], ["lcp_element", "STRING"], ["cls", "INT32"], ["ttfb", "INT32"], ["fcp", "INT32"],
+  ],
   custom: [["ts", "INT64"], ["session", "INT64"], ["visitor", "INT64"], ["name", "STRING"], ["path", "STRING"], ["props", "STRING"]],
 };
+
+/** Web Vitals columns on the engagement table (ms; cls is CLS × 1000). */
+export const VITAL_COLUMNS = ["inp", "inp_target", "inp_type", "inp_delay", "inp_processing", "inp_presentation", "lcp", "lcp_element", "cls", "ttfb", "fcp"] as const;
 
 /** Column holding each table's timestamp (unix seconds). Sessions are partitioned by start. */
 export const TIME_COLUMN: Record<TableName, string> = { sessions: "start", pageviews: "ts", engagement: "ts", custom: "ts" };

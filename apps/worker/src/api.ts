@@ -9,6 +9,8 @@ import { createDemoSites, demoTick, seededMarker, seedHistory, seedToday } from 
 import { rollupSite, storedDays, type DayStats } from "./rollup";
 import { addDays, localMidnight, todayIn } from "./tz";
 import { alpha2 } from "./iso3";
+import { createToken, forgetGrant, listTokens, revokeToken } from "./tokens";
+import { approve, checkAuthorize, listGrants, revokeGrant } from "./oauth";
 import {
   apiKey, cruxHistory, GoogleError, gscProperties, pagePath, parseServiceAccount, propertyFor, saveSetting, searchAnalytics, serviceAccount, SETTING_KEY, SETTING_SA,
   speedRuns, testApiKey, testServiceAccount, testSite, type SearchDim, type SearchRow,
@@ -17,6 +19,9 @@ import {
 type Ctx = { Bindings: Env; Variables: { user: User } };
 
 export const api = new Hono<Ctx>();
+
+/** Env key under which mcp.ts passes the authenticated token's user to these routes. */
+export const INTERNAL_USER = "__qwaInternalUser";
 
 api.onError((err, c) => {
   if (err instanceof AuthError) return c.json({ error: err.message }, err.status);
@@ -31,7 +36,9 @@ api.use("*", async (c, next) => {
     if (origin && new URL(origin).host !== new URL(c.req.url).host) return c.json({ error: "cross-origin request" }, 403);
     if (!c.req.header("content-type")?.includes("application/json")) return c.json({ error: "expected JSON" }, 415);
   }
-  c.set("user", await currentUser(c.req.raw, c.env));
+  // MCP tool calls run through these same routes as the token's user (set by mcp.ts, never from a request).
+  const internal = (c.env as Env & { [INTERNAL_USER]?: User })[INTERNAL_USER];
+  c.set("user", internal ?? (await currentUser(c.req.raw, c.env)));
   await next();
 });
 
@@ -326,6 +333,74 @@ api.post("/sites/:site/speed/test", async (c) => {
   } catch (e) {
     return googleError(c, e);
   }
+});
+
+// ---------- personal access tokens (for agents / MCP) ----------
+
+api.get("/tokens", async (c) => c.json({ tokens: await listTokens(c.env, c.get("user").id) }));
+
+api.post("/tokens", async (c) => {
+  const user = c.get("user");
+  const body = await c.req.json<{ name?: string; sites?: number[] | null; expiresInDays?: number | null }>();
+  const name = (body.name ?? "").trim().slice(0, 80);
+  if (!name) return c.json({ error: "give the token a name, e.g. the agent or machine it's for" }, 400);
+  let sites: number[] | null = null;
+  if (Array.isArray(body.sites) && body.sites.length) {
+    const visible = await visibleSiteIds(c.env, user);
+    sites = [...new Set(body.sites.map(Number))].filter((id) => Number.isInteger(id) && (visible === "all" || visible.includes(id)));
+    if (!sites.length) return c.json({ error: "none of those sites are visible to you" }, 400);
+  }
+  const days = body.expiresInDays ?? null;
+  if (days !== null && !(Number.isInteger(days) && days >= 1 && days <= 3650)) return c.json({ error: "expiresInDays must be 1–3650, or null" }, 400);
+  const { token, row } = await createToken(c.env, user.id, { name, sites, expiresInDays: days });
+  return c.json({ token, ...row }, 201);
+});
+
+api.delete("/tokens/:id", async (c) => {
+  const ok = await revokeToken(c.env, c.get("user").id, Number(c.req.param("id")));
+  return ok ? c.json({ ok: true }) : c.json({ error: "token not found" }, 404);
+});
+
+// ---------- OAuth consent (the page at /oauth/authorize) and connected apps ----------
+
+const authorizeParams = (o: Record<string, unknown>) => ({
+  client_id: String(o.client_id ?? ""),
+  redirect_uri: o.redirect_uri ? String(o.redirect_uri) : undefined,
+  response_type: String(o.response_type ?? ""),
+  code_challenge: String(o.code_challenge ?? ""),
+  code_challenge_method: o.code_challenge_method ? String(o.code_challenge_method) : undefined,
+  state: o.state ? String(o.state) : undefined,
+  scope: o.scope ? String(o.scope) : undefined,
+  resource: o.resource ? String(o.resource) : undefined,
+});
+
+/** What the consent page shows: which app is asking, or why the request can't be approved. */
+api.get("/oauth/client", async (c) => {
+  const checked = await checkAuthorize(c.env, c.req.raw, authorizeParams(c.req.query()));
+  if ("error" in checked) return c.json({ error: checked.error }, 400);
+  return c.json({ client_name: checked.client.client_name, redirect_host: new URL(checked.redirectUri).host, user: c.get("user").email });
+});
+
+api.post("/oauth/approve", async (c) => {
+  const user = c.get("user");
+  const body = await c.req.json<Record<string, unknown> & { sites?: number[] | null }>();
+  let sites: number[] | null = null;
+  if (Array.isArray(body.sites) && body.sites.length) {
+    const visible = await visibleSiteIds(c.env, user);
+    sites = [...new Set(body.sites.map(Number))].filter((id) => Number.isInteger(id) && (visible === "all" || visible.includes(id)));
+    if (!sites.length) return c.json({ error: "none of those sites are visible to you" }, 400);
+  }
+  const out = await approve(c.env, c.req.raw, user, { ...authorizeParams(body), sites });
+  return "error" in out ? c.json({ error: out.error }, 400) : c.json(out);
+});
+
+api.get("/oauth/grants", async (c) => c.json({ grants: await listGrants(c.env, c.get("user").id) }));
+
+api.delete("/oauth/grants/:id", async (c) => {
+  const id = Number(c.req.param("id"));
+  const ok = await revokeGrant(c.env, c.get("user").id, id);
+  if (ok) forgetGrant(id);
+  return ok ? c.json({ ok: true }) : c.json({ error: "not found" }, 404);
 });
 
 // ---------- admin ----------
