@@ -78,7 +78,7 @@ export const DEMO_SITES: Profile[] = [
     domain: "status.acme.example", timezone: "UTC", base: 35, growth: 0.1, weekend: 0.5, bounce: 0.83,
     pages: [["/", 80], ["/incidents", 10], ["/history", 6]],
     events: [["Subscribe", 0.01]],
-    spikes: [[23, 9], [24, 2.5]],
+    spikes: [[3, 9], [4, 2.5], [23, 6]],
   },
 ];
 

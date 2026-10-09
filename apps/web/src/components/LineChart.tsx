@@ -1,7 +1,14 @@
 import { useMemo, useRef, useState } from "react";
 import type { Metric, TimeGrain } from "@qwa/shared";
 import { bucketLabel, bucketTitle } from "../dates";
-import { change, METRIC_LABELS, metricValue } from "../format";
+import { ANOMALY_LABEL, change, METRIC_LABELS, metricValue } from "../format";
+import { Alarm } from "./Icons";
+
+export interface ChartMark {
+  index: number;
+  kind: "spike" | "drop" | "outage";
+  text: string;
+}
 
 interface Props {
   keys: string[];
@@ -12,6 +19,8 @@ interface Props {
   grain: TimeGrain;
   height?: number;
   onSelect?: (index: number) => void;
+  /** Anomalies: an alarm icon above the point, explained in the tooltip. */
+  marks?: ChartMark[];
 }
 
 /** A "nice" axis maximum: 1, 2, 2.5 or 5 × 10^n. */
@@ -28,7 +37,7 @@ const NON_COUNT = new Set<Metric>(["bounce_rate", "scroll_depth", "visit_duratio
 const W = 1000;
 const H = 300;
 
-export function LineChart({ keys, current, compareKeys, compare, metric, grain, height = 320, onSelect }: Props) {
+export function LineChart({ keys, current, compareKeys, compare, metric, grain, height = 320, onSelect, marks = [] }: Props) {
   const plot = useRef<HTMLDivElement>(null);
   const [hover, setHover] = useState<number | null>(null);
   const n = keys.length;
@@ -56,6 +65,7 @@ export function LineChart({ keys, current, compareKeys, compare, metric, grain, 
   const prev = h !== null && hasCmp ? compare![h] : undefined;
   const ch = prev === undefined ? null : change(cur, prev);
   const flip = hx > 70;
+  const hoverMarks = h === null ? [] : marks.filter((m) => m.index === h);
 
   return (
     <>
@@ -79,6 +89,20 @@ export function LineChart({ keys, current, compareKeys, compare, metric, grain, 
             {hasCmp && <path d={path(compare!)} fill="none" stroke="var(--color-neutral-500)" strokeWidth={1.5} strokeDasharray="5 4" vectorEffect="non-scaling-stroke" />}
             {line && <path d={line} fill="none" stroke="var(--color-accent)" strokeWidth={2.5} vectorEffect="non-scaling-stroke" />}
           </svg>
+          {marks.map((m) => {
+            const top = (y(current[m.index] ?? 0) / H) * 100;
+            return (
+              <div
+                key={`${m.index}-${m.kind}`}
+                className={`chart-mark ${m.kind}`}
+                style={{ left: `${(x(m.index) / W) * 100}%`, top: top < 12 ? `calc(${top}% + 10px)` : `calc(${top}% - 30px)` }}
+                aria-label={`${ANOMALY_LABEL[m.kind]}: ${m.text}`}
+                role="img"
+              >
+                <Alarm size={13} />
+              </div>
+            );
+          })}
           {h !== null && (
             <>
               <div className="xh" style={{ left: `${hx}%` }} />
@@ -90,6 +114,9 @@ export function LineChart({ keys, current, compareKeys, compare, metric, grain, 
                   <div className="r p"><span>{compareKeys?.[h] ? bucketTitle(compareKeys[h], grain) : "Comparison"}</span><span>{metricValue(metric, prev)}</span></div>
                 )}
                 {ch !== null && <div className="ch">{ch > 0 ? "+" : ch < 0 ? "−" : ""}{Math.abs(ch).toFixed(1)}%</div>}
+                {hoverMarks.map((m) => (
+                  <div key={m.kind} className={`an ${m.kind}`}><Alarm size={12} /><span><b>{ANOMALY_LABEL[m.kind]}.</b> {m.text}</span></div>
+                ))}
                 {onSelect && grain !== "hour" && <div className="hint">Click to zoom in</div>}
               </div>
             </>

@@ -27,6 +27,23 @@ export interface Env {
    *  - unset: the origin is not involved.
    */
   ORIGIN_MODE?: "mirror" | "passthrough";
+  /** The dashboard's canonical hostname, e.g. "analytics.example.com". Used for redirects and links in emails. */
+  APP_HOST?: string;
+  /**
+   * Old dashboard hostnames, comma-separated. They keep serving the tracker (/t.js, /e and the Plausible-compat
+   * paths) so existing snippets carry on working, and redirect everything else to APP_HOST.
+   */
+  LEGACY_APP_HOSTS?: string;
+  /** Cloudflare Email Sending binding, for anomaly alerts (optional). */
+  EMAIL?: SendEmail;
+  /** Sender for alert emails, e.g. "Quick Web Analytics <alerts@example.com>". Its domain must be onboarded to Email Sending. */
+  ALERT_FROM?: string;
+  /** Optional Reply-To for alert emails, e.g. a monitored inbox (the sending subdomain itself can't receive mail). */
+  ALERT_REPLY_TO?: string;
+  /** Daily events per site before ingestion pauses until midnight UTC (default 3,000,000). A site's own cap wins. */
+  DEFAULT_DAILY_CAP?: string;
+  /** "1" = emergency stop: accept and discard every tracking event without touching storage. */
+  INGEST_PAUSED?: string;
   /** Local demo only ("1"): enables /api/admin/demo/* to seed synthetic sites and traffic. Never set in production. */
   DEMO?: string;
 }
@@ -37,4 +54,6 @@ export interface Site {
   timezone: string;
   allowed_hostnames: string[];
   ip_blocklist: string[];
+  /** Daily event cap: null = default, 0 = none. */
+  daily_cap: number | null;
 }

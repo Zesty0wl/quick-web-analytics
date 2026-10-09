@@ -102,6 +102,8 @@ try {
   }
   log("rolling up daily totals…");
   await retry("rollup", () => call("/admin/rollup", {}));
+  log("checking for unusual days…");
+  await retry("anomaly check", () => call("/admin/anomalies", {}));
   // Fill the 30-minute realtime window (not fatal if it fails; the regular ticks catch up).
   await retry("live traffic", () => call("/admin/demo/tick", { seconds: 1800 })).catch((e) => log(`live traffic skipped: ${e.message}`));
 } catch (e) {

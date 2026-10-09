@@ -79,23 +79,70 @@ globalThis.fetch = (async (input: RequestInfo | URL, init?: RequestInit) => {
 }) as typeof fetch;
 
 // ---- DuckDB: one instance per isolate; queries serialised (Asyncify can't interleave) ----
-let ready: Promise<{ conn: { query: (sql: string) => Promise<Record<string, unknown>[]> } }> | null = null;
-let lock: Promise<unknown> = Promise.resolve();
+//
+// No request ever awaits a promise owned by another request: the runtime cancels such requests as "hung", and if
+// the request holding the lock is itself cancelled mid-query (e.g. its caller went away), its DuckDB reads never
+// complete. So waiting is done by polling on the waiter's own timer, queries have a timeout, and a lock held for too
+// long (its owner is gone) is taken over with a fresh DuckDB instance.
+type Conn = { query: (sql: string) => Promise<Record<string, unknown>[]> };
+const QUERY_TIMEOUT_MS = 50_000;
+const STALE_MS = 55_000;
+let instance: { conn: Conn; since: number } | null = null;
+let starting: number | null = null; // when the current DuckDB start-up began
+let holder: { since: number } | null = null; // the request running a query, if any
 
-function duck(env: Env) {
-  ready ??= (async () => {
-    await init({ wasmModule });
-    const db = new DuckDB({ customConfig: { memory_limit: env.MEMORY_LIMIT ?? "96MB", threads: "1" } });
-    return { conn: db.connect() as never };
-  })();
-  ready.catch(() => (ready = null));
-  return ready;
+const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
+
+/** Discard DuckDB (e.g. after a stuck query); the next query starts a new instance. */
+function resetDuck(reason: string) {
+  console.warn("resetting DuckDB:", reason);
+  instance = null;
+  starting = null;
 }
 
-function exclusive<T>(fn: () => Promise<T>): Promise<T> {
-  const run = lock.then(fn, fn);
-  lock = run.catch(() => undefined);
-  return run;
+async function duck(env: Env): Promise<Conn> {
+  for (;;) {
+    if (instance) return instance.conn;
+    if (starting === null || Date.now() - starting > STALE_MS) {
+      const mine = (starting = Date.now());
+      try {
+        await init({ wasmModule });
+        const db = new DuckDB({ customConfig: { memory_limit: env.MEMORY_LIMIT ?? "96MB", threads: "1" } });
+        if (starting === mine) instance = { conn: db.connect() as never, since: Date.now() };
+      } finally {
+        if (starting === mine) starting = null;
+      }
+      continue;
+    }
+    await sleep(15);
+  }
+}
+
+async function exclusive<T>(fn: () => Promise<T>): Promise<T> {
+  for (;;) {
+    if (!holder) break;
+    if (Date.now() - holder.since > STALE_MS) {
+      resetDuck(`query lock held for ${Math.round((Date.now() - holder.since) / 1000)}s`);
+      break;
+    }
+    await sleep(10);
+  }
+  const mine = (holder = { since: Date.now() });
+  let timer: ReturnType<typeof setTimeout> | null = null;
+  try {
+    return await Promise.race([
+      fn(),
+      new Promise<never>((_, reject) => {
+        timer = setTimeout(() => reject(new Error(`query took longer than ${QUERY_TIMEOUT_MS / 1000}s`)), QUERY_TIMEOUT_MS);
+      }),
+    ]);
+  } catch (e) {
+    if ((e as Error).message.startsWith("query took longer")) resetDuck((e as Error).message);
+    throw e;
+  } finally {
+    if (timer !== null) clearTimeout(timer);
+    if (holder === mine) holder = null;
+  }
 }
 
 async function filesFor(siteId: number, table: TableName, from: number, to: number): Promise<string[]> {
@@ -121,7 +168,17 @@ async function filesFor(siteId: number, table: TableName, from: number, to: numb
 const num = (v: unknown) => (typeof v === "bigint" ? Number(v) : v);
 
 export class QueryService extends WorkerEntrypoint<Env> {
+  /**
+   * Always let a query run to completion, even if the caller goes away (a closed tab cancels the request chain).
+   * A query cut off mid-read leaves DuckDB's single WebAssembly module waiting forever and wedges the isolate.
+   */
   async query(siteId: number, timezone: string, spec: QuerySpec): Promise<QueryResult> {
+    const run = this.run(siteId, timezone, spec);
+    this.ctx.waitUntil(run.catch(() => undefined));
+    return run;
+  }
+
+  private async run(siteId: number, timezone: string, spec: QuerySpec): Promise<QueryResult> {
     bucket = this.env.DATA;
     const started = Date.now();
     const from = localMidnight(timezone, spec.from);
@@ -134,8 +191,7 @@ export class QueryService extends WorkerEntrypoint<Env> {
     ) as Record<TableName, string[]>;
 
     const { sql, key } = buildSql({ spec, from, to, segments, files, approximate: days > APPROX_AFTER_DAYS });
-    const { conn } = await duck(this.env);
-    const raw = await exclusive(() => conn.query(sql));
+    const raw = await exclusive(async () => (await duck(this.env)).query(sql));
 
     let rows = raw.map((r) => Object.fromEntries(Object.entries(r).map(([k, v]) => [k, num(v)]))) as Record<string, string | number | null>[];
     if (key === "hour") {

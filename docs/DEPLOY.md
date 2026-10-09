@@ -140,6 +140,24 @@ The tracker is under 2 KB gzipped, sets no cookies and follows single-page-app n
 
 **Allowed hostnames and IP blocklist** (Admin → Sites → Settings): restrict which hostnames may send events for a site (by default any), and drop events from your office IPs or CIDR ranges.
 
+## Anomaly alerts
+
+Every night QWA compares each site's visitors with the same weekday over the previous six weeks, and every hour (at 10 past) it compares the day so far with the same time on those weekdays, including a check for a tracker that has gone quiet for three normally busy hours, so most alerts arrive within the hour. The hourly check uses stricter thresholds (a partial day is noisier) and alerts at most once per site per day; the nightly check doesn't repeat an alert the hourly one already sent. Unusual days (a spike, a drop, or a possible outage when a busy site suddenly gets almost no visits) get an alarm icon on the site's chart and card. A run of unusual days counts once. The thresholds were calibrated on 22 real sites: busy, spiky sites get one or two alerts a month and steady sites rarely any.
+
+Anyone can opt in to email for a site with the **Alerts** bell on its page. Admins can also pick sites from a checklist, or choose **Every site** (including sites added later), under **Admin → Alerts**. Each email shows the day's visitors against the usual for that weekday, a four-week chart, the other metrics for the day, and which sources, pages and countries drove the change (or what to check, for a possible outage).
+
+To send email:
+
+1. In the Cloudflare dashboard, **Email Service → Email Sending → Onboard Domain**, and pick the domain (or a subdomain) to send from. It adds bounce records under `cf-bounce` and a DMARC record. If the domain already has email elsewhere (e.g. Microsoft 365 or Google), review the DMARC record before you confirm, or onboard a subdomain such as `alerts.example.com` instead.
+2. In `apps/worker/wrangler.jsonc`, uncomment `"send_email": [{ "name": "EMAIL" }]` and set `"ALERT_FROM": "Quick Web Analytics <alerts@your-domain>"`.
+3. `npm run deploy`, then **Admin → Alerts → Send me a test email**.
+
+## Moving to a new hostname
+
+1. Add the new hostname as a route (keep the old one) and set `APP_HOST` to the new one and `LEGACY_APP_HOSTS` to the old one.
+2. In Cloudflare Access, move the dashboard application to the new hostname, add the new hostname's `/t.js` and `/e` to the bypass application, and add the whole old hostname to the bypass application (it only redirects now).
+3. Deploy. The old hostname keeps serving `/t.js` and `/e` (so existing snippets work unchanged) and redirects everything else, keeping the path. Update snippets to the new hostname when convenient.
+
 ## Updating
 
 ```sh
@@ -158,7 +176,8 @@ These run automatically, from the cron triggers in `wrangler.jsonc`:
 | When (UTC) | Job |
 |---|---|
 | 00:05 | Rotate the daily salt used for cookieless visitor hashing. Salts older than two days are deleted. |
-| 03:30 | Merge last month's day files into one month file per table, then compute daily totals for the overview. |
+| 03:30 | Merge last month's day files into one month file per table, compute daily totals for the overview, then run the nightly anomaly check. |
+| Every hour at :10 | The "so far today" anomaly check (emails straight away). |
 
 To fill daily totals straight away (for example after importing history), send `POST /api/admin/rollup` with a JSON body from a signed-in admin session, e.g. from the browser console on the dashboard: `fetch("/api/admin/rollup", { method: "POST", headers: { "content-type": "application/json" }, body: "{}" })`.
 
@@ -171,6 +190,17 @@ The heaviest parts are:
 - **Query Worker CPU time:** when people use the dashboard.
 
 R2 storage is small: Parquet takes roughly 20 bytes per event, so a site with 4.5 million events of history uses about 80 MB.
+
+## Keeping costs bounded
+
+Cloudflare has no hard spending cap for Workers, and every tracking request that reaches the Worker is billed (roughly $5 per million events beyond the Workers Paid allowances, most of it Durable Object row writes). These brakes keep a flood or a runaway site from becoming an expensive surprise:
+
+- **Daily limit per site** (built in). A site that sends more than 3,000,000 events in a UTC day stops recording until midnight. Admins get an email, the site's card and page say recording is paused, and further events are dropped before they reach storage. Change the limit per site in Admin → Sites → Settings (0 = no limit), or the default with `DEFAULT_DAILY_CAP`.
+- **Emergency stop.** Set `"INGEST_PAUSED": "1"` in `vars` and deploy: tracking requests are answered but nothing is stored.
+- **Rate limit at the edge** (recommended). Requests blocked by a Cloudflare rate-limiting rule never reach the Worker, so they cost nothing. The Free plan includes one rule per zone; for example *Security → WAF → Rate limiting rules*: when `http.host eq "analytics.example.com" and http.request.method eq "POST" and http.request.uri.path in {"/e" "/api/event"}`, allow 100 requests per 10 seconds per IP, then block for 10 seconds. A real visitor sends a handful of events per page.
+- **Billing alerts.** In *Notifications*, add *Billing Budget Alerts* (e.g. at $25, $50 and $100 of usage-based spend this month) so you hear about unusual usage early.
+
+The Worker also skips Cloudflare's automatic per-request log line (`invocation_logs: false`) while keeping every error and warning, since Workers Logs are billed per line at high volume.
 
 ## Troubleshooting
 

@@ -20,6 +20,8 @@ No cookies, no servers to look after, no per-pageview pricing. A 2 KB tracker, a
   - **Metrics and chart:** nine metrics, each with its change, and a chart with the comparison period overlaid. Click the chart to zoom into a day, week or month.
   - **Breakdowns:** realtime with a live map, sources and channels, pages (entry and exit too), UTM campaigns, custom events, devices and browsers, countries and cities.
   - **Day-by-day views:** a weekday × hour heatmap, and a day-by-day table with day-over-day and week-over-week change.
+- **Anomaly alerts:** unusual days (spikes, drops, possible outages) are spotted against the same weekday's usual range, hourly for the day so far and nightly for whole days, and marked with an alarm on the chart. Anyone can opt in to an email per site (Cloudflare Email Sending).
+- **Cost brakes:** a daily event limit per site (recording pauses until midnight, admins are emailed), an emergency stop, and guidance for an edge rate limit and billing alerts. Cloudflare has no hard spending cap, so QWA brings its own.
 - **Everything filters:** click any row to filter the whole page by it, then flip a filter between *is* and *is not*.
 - **Share per site:** admins give each person access to specific sites. Sign-in uses Cloudflare Access (email codes, Google, GitHub…), so QWA never stores passwords.
 - **Plausible-compatible:** existing Plausible snippets keep working while you switch over, and history can be imported from a self-hosted Plausible CE instance. See [MIGRATING.md](docs/MIGRATING.md).
@@ -110,7 +112,7 @@ QWA is young, but it runs in production for a couple of dozen sites. Planned:
 - public share links
 - email digests
 
-Issues and pull requests are welcome.
+Issues and pull requests are welcome. See [CHANGELOG.md](CHANGELOG.md) for what's changed.
 
 ## Licence
 

@@ -1,6 +1,6 @@
 import { useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import { api, type Me } from "../api";
+import { api, useAlerts, type Me } from "../api";
 
 interface SiteRow {
   id: number;
@@ -8,6 +8,7 @@ interface SiteRow {
   timezone: string;
   allowed_hostnames: string[];
   ip_blocklist: string[];
+  daily_cap: number | null;
 }
 interface UserRow {
   id: number;
@@ -21,22 +22,134 @@ interface UserRow {
 const lines = (s: string) => s.split(/[\s,]+/).map((x) => x.trim()).filter(Boolean);
 
 export function Admin({ me }: { me: Me }) {
-  const [tab, setTab] = useState<"users" | "sites">("users");
+  const [tab, setTab] = useState<"users" | "sites" | "alerts">("users");
+  const heads = {
+    users: ["Users & access", "Who can sign in, and which sites they can see"],
+    sites: ["Sites", "Add sites, install the tracker and change settings"],
+    alerts: ["Alerts", "Unusual days (spikes, drops and possible outages), and the emails about them"],
+  } as const;
   return (
     <div className="admin">
       <header className="pagehead">
         <div className="titles">
           <div className="kicker">Administration</div>
-          <h1 style={{ margin: 0 }}>{tab === "users" ? "Users & access" : "Sites"}</h1>
-          <div className="sub">{tab === "users" ? "Who can sign in, and which sites they can see" : "Add sites, install the tracker and change settings"}</div>
+          <h1 style={{ margin: 0 }}>{heads[tab][0]}</h1>
+          <div className="sub">{heads[tab][1]}</div>
         </div>
       </header>
       <div className="seg" style={{ marginBottom: "var(--space-6)" }}>
         <button className={tab === "users" ? "on" : ""} onClick={() => setTab("users")}>Users & access</button>
         <button className={tab === "sites" ? "on" : ""} onClick={() => setTab("sites")}>Sites</button>
+        <button className={tab === "alerts" ? "on" : ""} onClick={() => setTab("alerts")}>Alerts</button>
       </div>
-      {tab === "users" ? <Users me={me} /> : <Sites />}
+      {tab === "users" ? <Users me={me} /> : tab === "sites" ? <Sites /> : <Alerts me={me} />}
     </div>
+  );
+}
+
+/** The signed-in user's alert emails: every site, or a checklist. Saves as you click. */
+function AlertSettings({ me }: { me: Me }) {
+  const alerts = useAlerts();
+  const qc = useQueryClient();
+  const save = useMutation({
+    mutationFn: (body: { all?: boolean; sites?: number[] }) => api("/alerts", { method: "PUT", body: JSON.stringify(body) }),
+    onMutate: async (body) => {
+      // Optimistic: tick boxes immediately.
+      await qc.cancelQueries({ queryKey: ["alerts"] });
+      const prev = qc.getQueryData<{ email: boolean; all: boolean; sites: number[] }>(["alerts"]);
+      if (prev) qc.setQueryData(["alerts"], { ...prev, ...(body.all !== undefined ? { all: body.all } : {}), ...(body.sites ? { sites: body.sites } : {}) });
+      return { prev };
+    },
+    onError: (_e, _b, ctx) => ctx?.prev && qc.setQueryData(["alerts"], ctx.prev),
+    onSettled: () => qc.invalidateQueries({ queryKey: ["alerts"] }),
+  });
+  if (!alerts.data) return null;
+  const { all, sites } = alerts.data;
+  const chosen = new Set(sites);
+  const sorted = [...me.sites].sort((a, b) => a.domain.localeCompare(b.domain));
+  const setSites = (ids: number[]) => save.mutate({ sites: ids });
+  return (
+    <section className="cell">
+      <header className="panel-head"><h3>Your alert emails</h3><span className="hint">{all ? "Every site" : `${chosen.size} of ${sorted.length} sites`}</span></header>
+      <label className="alert-all">
+        <input type="checkbox" checked={all} onChange={(e) => save.mutate({ all: e.target.checked })} />
+        <span><b>Every site</b>, including sites added later</span>
+      </label>
+      <div className={all ? "alert-sites disabled" : "alert-sites"}>
+        <div className="alert-sites-head">
+          <span className="hint">Or choose sites:</span>
+          <button className="link" disabled={all} onClick={() => setSites(sorted.map((s) => s.id))}>Select all</button>
+          <button className="link" disabled={all} onClick={() => setSites([])}>None</button>
+        </div>
+        <div className="alert-grid">
+          {sorted.map((s) => (
+            <label key={s.id} title={all ? "Covered by “Every site”" : undefined}>
+              <input
+                type="checkbox"
+                disabled={all}
+                checked={all || chosen.has(s.id)}
+                onChange={(e) => setSites(e.target.checked ? [...chosen, s.id] : [...chosen].filter((id) => id !== s.id))}
+              />
+              <span>{s.domain}</span>
+            </label>
+          ))}
+        </div>
+      </div>
+      {save.isError && <p className="error">{(save.error as Error).message}</p>}
+      <p className="hint" style={{ marginTop: 10 }}>Emails go to {me.user.email}. The Alerts bell on each site's page changes the same setting.</p>
+    </section>
+  );
+}
+
+function Alerts({ me }: { me: Me }) {
+  const alerts = useAlerts();
+  const test = useMutation({ mutationFn: () => api<{ to: string; about: string }>("/alerts/test", { method: "POST", body: "{}" }) });
+  const check = useMutation({ mutationFn: () => api<{ results: { domain: string; anomalies: number; today: string | null }[] }>("/admin/anomalies", { method: "POST", body: "{}" }) });
+  return (
+    <>
+      <section className="cell">
+        <header className="panel-head"><h3>How it works</h3></header>
+        <p>
+          Every night, after the daily totals are updated, each site's visitors are compared with the same weekday over the
+          previous six weeks. Every hour, the day so far is compared with the same time on those weekdays too, including a
+          check for a tracker that has gone quiet, so alerts can arrive within the hour. A day is flagged when it's far outside the usual range (a <b>spike</b>, a <b>drop</b>, or a
+          <b> possible outage</b> when a normally busy site gets almost no visits). Flagged days get an alarm icon on the
+          site's chart and on its card. A run of unusual days counts once.
+        </p>
+        <p className="hint">Anyone who can see a site can turn on emails for it with the <b>Alerts</b> bell on the site's page.</p>
+      </section>
+      <AlertSettings me={me} />
+      <section className="cell">
+        <header className="panel-head"><h3>Email</h3></header>
+        {alerts.data && (alerts.data.email ? (
+          <p>Email is set up. Alerts go to each subscriber's sign-in address ({me.user.email} for you).</p>
+        ) : (
+          <div className="callout">
+            Email isn't set up yet, so alerts only appear on the dashboard. To send emails, onboard a domain in Cloudflare
+            <b> Email Service → Email Sending</b>, then add the <code>send_email</code> binding and <code>ALERT_FROM</code> to the Worker (see docs/DEPLOY.md).
+          </div>
+        ))}
+        <div className="install"><div className="row">
+          <button onClick={() => test.mutate()} disabled={test.isPending || !alerts.data?.email}>{test.isPending ? "Sending…" : "Send me a test email"}</button>
+          {test.isSuccess && <span>Sent to {test.data.to}, about {test.data.about}.</span>}
+          {test.isError && <span className="error">{(test.error as Error).message}</span>}
+        </div></div>
+      </section>
+      <section className="cell">
+        <header className="panel-head"><h3>Check now</h3></header>
+        <p className="hint">Re-runs both checks for every site: whole days (normally nightly at about 03:30 UTC) and the day so far (normally every hour at 10 past). This doesn't send emails.</p>
+        <div className="install"><div className="row">
+          <button onClick={() => check.mutate()} disabled={check.isPending}>{check.isPending ? "Checking…" : "Check all sites"}</button>
+          {check.isError && <span className="error">{(check.error as Error).message}</span>}
+        </div></div>
+        {check.data && (
+          <table className="users" style={{ marginTop: 12 }}>
+            <thead><tr><th>Site</th><th>Unusual days on record</th><th>Today so far</th></tr></thead>
+            <tbody>{check.data.results.map((r) => <tr key={r.domain}><td>{r.domain}</td><td>{r.anomalies}</td><td>{r.today ? { spike: "Spike", drop: "Drop", outage: "Possible outage" }[r.today] ?? r.today : "Normal"}</td></tr>)}</tbody>
+          </table>
+        )}
+      </section>
+    </>
   );
 }
 
@@ -330,8 +443,10 @@ function SiteSettings({ site }: { site: SiteRow }) {
   const [hosts, setHosts] = useState(site.allowed_hostnames.join("\n"));
   const [ips, setIps] = useState(site.ip_blocklist.join("\n"));
   const [tz, setTz] = useState(site.timezone);
+  const [cap, setCap] = useState(site.daily_cap === null ? "" : String(site.daily_cap));
+  const capValue = cap.trim() === "" ? null : Number(cap.replace(/[,\s_]/g, ""));
   const save = useMutation({
-    mutationFn: () => api(`/admin/sites/${site.id}`, { method: "PATCH", body: JSON.stringify({ timezone: tz, allowed_hostnames: lines(hosts), ip_blocklist: lines(ips) }) }),
+    mutationFn: () => api(`/admin/sites/${site.id}`, { method: "PATCH", body: JSON.stringify({ timezone: tz, allowed_hostnames: lines(hosts), ip_blocklist: lines(ips), daily_cap: capValue }) }),
     onSuccess: () => qc.invalidateQueries({ queryKey: ["admin-sites"] }),
   });
   return (
@@ -343,7 +458,10 @@ function SiteSettings({ site }: { site: SiteRow }) {
       <label>Blocked IPs or CIDR ranges (one per line)
         <textarea rows={3} value={ips} onChange={(e) => setIps(e.target.value)} />
       </label>
-      <button onClick={() => save.mutate()} disabled={save.isPending}>Save</button>
+      <label>Daily event limit (empty = default of 3,000,000; 0 = no limit). Past it, the site stops recording until midnight UTC. A brake on costs.
+        <input inputMode="numeric" placeholder="3,000,000" value={cap} onChange={(e) => setCap(e.target.value)} />
+      </label>
+      <button onClick={() => save.mutate()} disabled={save.isPending || (capValue !== null && !(Number.isInteger(capValue) && capValue >= 0))}>Save</button>
       {save.isSuccess && <span className="hint"> Saved</span>}
       {save.isError && <span className="error">{(save.error as Error).message}</span>}
     </div>

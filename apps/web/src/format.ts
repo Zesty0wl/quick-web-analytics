@@ -108,3 +108,22 @@ export function ago(ts: number | null | undefined): string {
   if (s < 86_400) return `${Math.round(s / 3600)} h ago`;
   return `${Math.round(s / 86_400)} days ago`;
 }
+
+/** "Visitors 3.1× the usual Tuesday (2,410 vs about 780)", matching the alert emails. */
+export function describeAnomaly(a: { day: string; kind: "spike" | "drop" | "outage"; value: number; expected: number; metric?: string; detail?: { hour: number; window: string } | null }): string {
+  const weekday = new Date(`${a.day}T12:00:00Z`).toLocaleDateString("en-GB", { weekday: "long", timeZone: "UTC" });
+  if (a.metric === "intraday" && a.detail) {
+    const h = (x: number) => `${String(((x % 24) + 24) % 24).padStart(2, "0")}:00`;
+    if (a.detail.window === "last3h") return `${a.value === 0 ? "No visits" : `Only ${whole(a.value)} visits`} between ${h(a.detail.hour - 3)} and ${h(a.detail.hour)}, against about ${whole(a.expected)} on a usual ${weekday}. Is the tracker still installed?`;
+    const ratio = a.expected ? a.value / a.expected : 0;
+    return `So far today (to ${h(a.detail.hour)}): ${whole(a.value)} visits, ${a.kind === "spike" ? (ratio >= 2 ? `${ratio.toFixed(1)}×` : `+${Math.round((ratio - 1) * 100)}% on`) : `${Math.round((1 - ratio) * 100)}% below`} a usual ${weekday} by then (about ${whole(a.expected)})`;
+  }
+  if (a.kind === "outage") return `Almost no visitors (${whole(a.value)}) on a ${weekday} that usually has about ${whole(a.expected)}. Is the tracker still installed?`;
+  if (a.kind === "spike") {
+    const ratio = a.expected ? a.value / a.expected : 0;
+    return `Visitors ${ratio >= 2 ? `${ratio.toFixed(1)}×` : `+${Math.round((ratio - 1) * 100)}% on`} the usual ${weekday} (${whole(a.value)} vs about ${whole(a.expected)})`;
+  }
+  return `Visitors ${Math.round((1 - a.value / Math.max(1, a.expected)) * 100)}% below the usual ${weekday} (${whole(a.value)} vs about ${whole(a.expected)})`;
+}
+
+export const ANOMALY_LABEL = { spike: "Unusual spike", drop: "Unusual drop", outage: "Possible outage" } as const;

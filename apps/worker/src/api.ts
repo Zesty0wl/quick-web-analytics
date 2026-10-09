@@ -3,6 +3,8 @@ import { validateSpec } from "@qwa/shared";
 import { AuthError, canViewSite, currentUser, visibleSiteIds, type User } from "./auth";
 import type { Env } from "./env";
 import { allSites, invalidateSites, siteById } from "./sites";
+import { alertDetail, anomalyJob, checkIntraday, emailConfigured, refreshAnomalies, sendAlertEmail, siteAnomalies } from "./alerts";
+import { sampleAlert } from "./email";
 import { createDemoSites, demoTick, seededMarker, seedHistory, seedToday } from "./demo";
 import { rollupSite, storedDays, type DayStats } from "./rollup";
 import { addDays, localMidnight, todayIn } from "./tz";
@@ -61,6 +63,7 @@ api.get("/overview", async (c) => {
   const stored = await storedDays(c.env, sites.map((s) => s.id), [from, cfrom].sort()[0]);
   const { results: activeRows } = await c.env.DB.prepare("SELECT site_id, MAX(day) day FROM daily_stats WHERE visitors > 0 OR pageviews > 0 GROUP BY site_id").all<{ site_id: number; day: string }>();
   const lastActive = new Map(activeRows.map((r) => [r.site_id, r.day]));
+  const anomalies = await siteAnomalies(c.env, sites.map((s) => s.id), [from, cfrom].sort()[0], to);
 
   const out = await Promise.all(
     sites.map(async (site) => {
@@ -74,7 +77,7 @@ api.get("/overview", async (c) => {
         live = await c.env.SITE.get(c.env.SITE.idFromName(String(site.id))).overview(bounds);
       } catch (e) {
         console.error("overview DO failed", site.domain, e);
-        live = { firstEventAt: null, lastEventAt: null, plausible14d: 0, qwa14d: 0, now: 0, perMinute: [] as number[], days: [] };
+        live = { firstEventAt: null, lastEventAt: null, plausible14d: 0, qwa14d: 0, cappedAt: null, now: 0, perMinute: [] as number[], days: [] };
       }
       for (const d of live.days) {
         let stats: DayStats = d;
@@ -104,8 +107,9 @@ api.get("/overview", async (c) => {
       for (const [d, v] of have) if ((v.visitors > 0 || v.pageviews > 0) && (!lastActiveDay || d > lastActiveDay)) lastActiveDay = d;
       return {
         id: site.id, domain: site.domain, timezone: site.timezone,
-        lastEventAt: live.lastEventAt, lastActiveDay, now: live.now, perMinute: live.perMinute,
+        lastEventAt: live.lastEventAt, lastActiveDay, now: live.now, perMinute: live.perMinute, cappedAt: live.cappedAt ?? null,
         current: series(from, to), comparison: series(cfrom, cto),
+        anomalies: anomalies.filter((a) => a.site_id === site.id && a.day >= from).map(({ day, kind, value, expected, metric, detail }) => ({ day, kind, value, expected, metric, detail: detail ? JSON.parse(detail) : null })),
         ...(user.role === "admin" ? { plausible14d: live.plausible14d, qwa14d: live.qwa14d } : {}),
       };
     }),
@@ -127,6 +131,75 @@ api.post("/sites/:site/query", async (c) => {
   } catch (e) {
     console.error("query failed", e);
     return c.json({ error: `query failed: ${(e as Error).message}` }, 502);
+  }
+});
+
+// ---------- anomalies and alerts ----------
+
+api.get("/sites/:site/anomalies", async (c) => {
+  const site = await siteGuard(c);
+  if (!site) return c.json({ error: "site not found" }, 404);
+  const from = c.req.query("from") ?? "", to = c.req.query("to") ?? "";
+  if (!DATE.test(from) || !DATE.test(to)) return c.json({ error: "from/to must be YYYY-MM-DD" }, 400);
+  const list = await siteAnomalies(c.env, [site.id], from, to);
+  return c.json({ anomalies: list.map(({ day, kind, value, expected, score, metric, detail }) => ({ day, kind, value, expected, score, metric, detail: detail ? JSON.parse(detail) : null })) });
+});
+
+/** The signed-in user's alert settings ("all sites", or a list), and whether email is set up at all. */
+api.get("/alerts", async (c) => {
+  const user = c.get("user");
+  const [{ results }, row] = await Promise.all([
+    c.env.DB.prepare("SELECT site_id FROM alert_subscriptions WHERE user_id = ?").bind(user.id).all<{ site_id: number }>(),
+    c.env.DB.prepare("SELECT alert_all FROM users WHERE id = ?").bind(user.id).first<{ alert_all: number }>(),
+  ]);
+  return c.json({ email: emailConfigured(c.env), all: Boolean(row?.alert_all), sites: results.map((r) => r.site_id) });
+});
+
+/** Replace the signed-in user's alert settings in one go (the Admin → Alerts checklist). */
+api.put("/alerts", async (c) => {
+  const user = c.get("user");
+  const body = await c.req.json<{ all?: boolean; sites?: number[] }>();
+  const visible = await visibleSiteIds(c.env, user);
+  const stmts = [];
+  if (typeof body.all === "boolean") stmts.push(c.env.DB.prepare("UPDATE users SET alert_all = ? WHERE id = ?").bind(body.all ? 1 : 0, user.id));
+  if (Array.isArray(body.sites)) {
+    const ids = [...new Set(body.sites.map(Number))].filter((id) => Number.isInteger(id) && (visible === "all" || visible.includes(id)));
+    stmts.push(c.env.DB.prepare("DELETE FROM alert_subscriptions WHERE user_id = ?").bind(user.id));
+    for (const id of ids) stmts.push(c.env.DB.prepare("INSERT OR IGNORE INTO alert_subscriptions (user_id, site_id) SELECT ?, id FROM sites WHERE id = ?").bind(user.id, id));
+  }
+  if (stmts.length) await c.env.DB.batch(stmts);
+  return c.json({ ok: true });
+});
+
+api.put("/sites/:site/alerts", async (c) => {
+  const site = await siteGuard(c);
+  if (!site) return c.json({ error: "site not found" }, 404);
+  const { on } = await c.req.json<{ on?: boolean }>();
+  const user = c.get("user");
+  await (on
+    ? c.env.DB.prepare("INSERT INTO alert_subscriptions (user_id, site_id) VALUES (?, ?) ON CONFLICT DO NOTHING").bind(user.id, site.id)
+    : c.env.DB.prepare("DELETE FROM alert_subscriptions WHERE user_id = ? AND site_id = ?").bind(user.id, site.id)
+  ).run();
+  return c.json({ on: Boolean(on) });
+});
+
+/** Send the signed-in user a test alert: their most recent real anomaly if there is one, otherwise a sample. */
+api.post("/alerts/test", async (c) => {
+  if (!emailConfigured(c.env)) return c.json({ error: "Email isn't set up: add the EMAIL binding and ALERT_FROM (see docs/DEPLOY.md)." }, 400);
+  const user = c.get("user");
+  const visible = await visibleSiteIds(c.env, user);
+  const sites = (await allSites(c.env)).filter((s) => visible === "all" || visible.includes(s.id));
+  const recent = sites.length
+    ? await c.env.DB.prepare(`SELECT site_id, day, kind, value, expected FROM anomalies WHERE site_id IN (${sites.map((s) => s.id).join(",")}) ORDER BY day DESC LIMIT 1`)
+        .first<{ site_id: number; day: string; kind: "spike" | "drop" | "outage"; value: number; expected: number }>()
+    : null;
+  const site = recent && sites.find((s) => s.id === recent.site_id);
+  const detail = recent && site ? await alertDetail(c.env, site, recent) : sampleAlert(addDays(todayIn("UTC"), -1));
+  try {
+    const r = await sendAlertEmail(c.env, user.email, [detail], true);
+    return c.json({ sent: true, to: user.email, about: recent && site ? `${site.domain}, ${recent.day}` : "a sample alert", messageId: r.messageId });
+  } catch (e) {
+    return c.json({ error: `Sending failed: ${(e as Error).message}` }, 502);
   }
 });
 
@@ -173,7 +246,10 @@ admin.post("/sites", async (c) => {
 
 admin.patch("/sites/:site", async (c) => {
   const id = Number(c.req.param("site"));
-  const body = await c.req.json<{ timezone?: string; allowed_hostnames?: string[]; ip_blocklist?: string[] }>();
+  const body = await c.req.json<{ timezone?: string; allowed_hostnames?: string[]; ip_blocklist?: string[]; daily_cap?: number | null }>();
+  if (body.daily_cap !== undefined && body.daily_cap !== null && !(Number.isInteger(body.daily_cap) && body.daily_cap >= 0)) {
+    return c.json({ error: "daily_cap must be a whole number (0 = no limit) or null (default)" }, 400);
+  }
   if (body.timezone !== undefined && !validTimezone(body.timezone)) return c.json({ error: "invalid timezone" }, 400);
   const list = (v: unknown) => Array.isArray(v) && v.length <= 200 && v.every((x) => typeof x === "string" && x.length < 100);
   if (body.allowed_hostnames !== undefined && !list(body.allowed_hostnames)) return c.json({ error: "invalid allowed_hostnames" }, 400);
@@ -188,6 +264,7 @@ admin.patch("/sites/:site", async (c) => {
       id,
     )
     .run();
+  if (body.daily_cap !== undefined) await c.env.DB.prepare("UPDATE sites SET daily_cap = ? WHERE id = ?").bind(body.daily_cap, id).run();
   invalidateSites();
   return c.json({ ok: true });
 });
@@ -210,7 +287,8 @@ admin.get("/sites/status", async (c) => {
 admin.get("/sites/:site/check", async (c) => {
   const site = await siteById(c.env, Number(c.req.param("site")));
   if (!site) return c.json({ error: "site not found" }, 404);
-  const appHost = new URL(c.req.url).host;
+  // A snippet on the current, canonical or any old dashboard hostname counts as installed.
+  const appHosts = [new URL(c.req.url).host, c.env.APP_HOST ?? "", ...(c.env.LEGACY_APP_HOSTS ?? "").split(",")].map((h) => h.trim()).filter(Boolean);
   try {
     const res = await fetch(`https://${site.domain}/`, {
       headers: { "user-agent": "Mozilla/5.0 (compatible; QWA-InstallCheck/1.0)", accept: "text/html" },
@@ -219,7 +297,8 @@ admin.get("/sites/:site/check", async (c) => {
     });
     const html = (await res.text()).slice(0, 1_000_000);
     const domainRe = site.domain.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
-    const qwa = new RegExp(`<script[^>]*${appHost.replace(/\./g, "\\.")}/t\\.js[^>]*>`, "i").test(html) && new RegExp(`data-site=["']${domainRe}["']`, "i").test(html);
+    const hostRe = appHosts.map((h) => h.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")).join("|");
+    const qwa = new RegExp(`<script[^>]*(${hostRe})/t\\.js[^>]*>`, "i").test(html) && new RegExp(`data-site=["']${domainRe}["']`, "i").test(html);
     const ingestHosts = c.env.INGEST_HOSTS.split(",").map((h) => h.trim().replace(/\./g, "\\.")).filter(Boolean);
     const plausible = new RegExp(`(${[...ingestHosts, "plausible\\.io"].join("|")})/js/|data-domain=|/js/pa-[\\w-]+\\.js`, "i").test(html);
     return c.json({ status: res.status, url: res.url, qwa, plausible });
@@ -293,6 +372,25 @@ demo.post("/tick", async (c) => {
   return c.json({ events: await demoTick(c.env, await allSites(c.env), seconds) });
 });
 admin.route("/demo", demo);
+
+// Re-run the anomaly check now (normally nightly after the rollup). `send: true` also emails new alerts.
+admin.post("/anomalies", async (c) => {
+  const body = await c.req.json<{ send?: boolean }>().catch(() => ({}) as { send?: boolean });
+  const sites = await allSites(c.env);
+  if (body.send) {
+    await anomalyJob(c.env, sites);
+    return c.json({ ok: true, sent: true });
+  }
+  const results = [];
+  for (const site of sites) {
+    const anomalies = await refreshAnomalies(c.env, site);
+    // Also run the hourly "so far today" check (recorded, not emailed).
+    await checkIntraday(c.env, site, { send: false }).catch((e) => console.error("hourly check failed", site.domain, e));
+    const today = await c.env.DB.prepare("SELECT kind FROM anomalies WHERE site_id = ? AND metric = 'intraday' AND day = ?").bind(site.id, todayIn(site.timezone)).first<{ kind: string }>();
+    results.push({ domain: site.domain, anomalies, today: today?.kind ?? null });
+  }
+  return c.json({ results });
+});
 
 admin.get("/users", async (c) => {
   const { results: users } = await c.env.DB.prepare("SELECT id, email, name, role, created_at, last_seen_at FROM users ORDER BY email").all();

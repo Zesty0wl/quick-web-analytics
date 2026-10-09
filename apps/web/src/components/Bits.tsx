@@ -18,13 +18,37 @@ export function Delta({ metric, current, previous }: { metric: Metric; current: 
   return d ? <span className={d.cls}>{d.text}</span> : null;
 }
 
-/** Sparkline: 7% area, dashed comparison, 2px line (ink when growing, accent when declining). */
-export function Spark({ current, comparison, growing, height = 52, width }: { current: number[]; comparison?: number[]; growing: boolean; height?: number; width?: number }) {
-  const max = Math.max(1, ...current, ...(comparison ?? []));
-  const path = (vals: number[]) =>
-    vals.length < 2 ? "" : vals.map((v, i) => `${i ? "L" : "M"}${((i / (vals.length - 1)) * 100).toFixed(2)},${(31 - (v / max) * 29).toFixed(2)}`).join("");
+/**
+ * Sparkline: 7% area, dashed comparison, 2px line (ink when growing, accent when declining).
+ * `fit` scales to the data's own range (for rates like bounce rate) instead of from zero; the range is at
+ * least 20% of the peak so day-to-day noise isn't blown up into big swings.
+ */
+export function Spark({ current, comparison, growing, height = 52, width, fit = false }: { current: number[]; comparison?: number[]; growing: boolean; height?: number; width?: number; fit?: boolean }) {
+  // NaN marks "no data" (e.g. a rate on a day without visits): left out of the scale and drawn as a gap.
+  const all = [...current, ...(comparison ?? [])].filter((v) => Number.isFinite(v));
+  const max = Math.max(1, ...all);
+  let lo = 0;
+  let hi = max;
+  if (fit && all.length) {
+    const mid = (Math.min(...all) + Math.max(...all)) / 2;
+    const span = Math.max(Math.max(...all) - Math.min(...all), max * 0.2) * 1.15;
+    lo = mid - span / 2;
+    hi = mid + span / 2;
+  }
+  const y = (v: number) => 31 - ((v - lo) / (hi - lo || 1)) * 29;
+  const path = (vals: number[]) => {
+    if (vals.length < 2) return "";
+    let d = "";
+    let pen = false;
+    vals.forEach((v, i) => {
+      if (!Number.isFinite(v)) return void (pen = false);
+      d += `${pen ? "L" : "M"}${((i / (vals.length - 1)) * 100).toFixed(2)},${y(v).toFixed(2)}`;
+      pen = true;
+    });
+    return d;
+  };
   const line = path(current);
-  const area = line ? `${line}L100,32L0,32Z` : "";
+  const area = line && !line.includes("M", 1) ? `${line}L100,32L0,32Z` : ""; // only under an unbroken line
   return (
     <svg viewBox="0 0 100 32" preserveAspectRatio="none" style={{ width: width ?? "100%", height, display: "block", overflow: "visible" }} aria-hidden>
       {area && <path d={area} fill="color-mix(in srgb, var(--tint) 7%, transparent)" />}
@@ -35,13 +59,37 @@ export function Spark({ current, comparison, growing, height = 52, width }: { cu
 }
 
 /** 30 per-minute bars: newest in accent, older in ink at 22%. */
-export function MinuteBars({ values, height, fill }: { values: number[]; height?: number; fill?: boolean }) {
+/**
+ * 30 per-minute bars: newest in accent, older in ink at 22%. With `tip`, hovering a minute (anywhere in its column,
+ * so short bars are easy to hit) shows a tooltip with whatever `tip` returns for that minute.
+ */
+export function MinuteBars({ values, height, fill, minHeight = 72, tip }: { values: number[]; height?: number; fill?: boolean; minHeight?: number; tip?: (i: number) => React.ReactNode }) {
   const max = Math.max(1, ...values);
+  const [hover, setHover] = useState<number | null>(null);
+  const n = values.length;
   return (
-    <div className="minibars" style={fill ? { flex: 1, minHeight: 72 } : { height: height ?? 64 }} role="img" aria-label="Visitors per minute, last 30 minutes">
+    <div
+      className={tip ? "minibars has-tip" : "minibars"}
+      style={fill ? { flex: 1, minHeight } : { height: height ?? 64 }}
+      role="img"
+      aria-label="Visitors per minute, last 30 minutes"
+      onMouseLeave={() => setHover(null)}
+    >
       {values.map((v, i) => (
-        <div key={i} className={i === values.length - 1 ? "now" : ""} style={{ height: `${(v / max) * 100}%` }} title={`${v} visitor${v === 1 ? "" : "s"}, ${values.length - 1 - i} min ago`} />
+        <div
+          key={i}
+          className={`mb-col${hover === i ? " on" : ""}`}
+          onMouseEnter={tip ? () => setHover(i) : undefined}
+          title={tip ? undefined : `${v} visitor${v === 1 ? "" : "s"}, ${n - 1 - i} min ago`}
+        >
+          <div className={i === n - 1 ? "mb-bar now" : "mb-bar"} style={{ height: `${(v / max) * 100}%` }} />
+        </div>
       ))}
+      {tip && hover !== null && (
+        <div className="mb-tip" style={{ left: `${((hover + 0.5) / n) * 100}%`, transform: hover > n * 0.7 ? "translateX(calc(-100% - 10px))" : hover < n * 0.3 ? "translateX(10px)" : "translateX(-50%)" }}>
+          {tip(hover)}
+        </div>
+      )}
     </div>
   );
 }

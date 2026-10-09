@@ -11,3 +11,6 @@ export const Calendar = () => <svg {...p(15)}><rect x="3" y="4" width="18" heigh
 export const Cards = () => <svg {...p(17)}><rect x="3" y="3" width="7.5" height="7.5" rx="2" /><rect x="13.5" y="3" width="7.5" height="7.5" rx="2" /><rect x="3" y="13.5" width="7.5" height="7.5" rx="2" /><rect x="13.5" y="13.5" width="7.5" height="7.5" rx="2" /></svg>;
 export const Grid = () => <svg {...p(17)}><path d="M3 3h18v18H3zM12 3v18M3 12h18" /></svg>;
 export const ChevronDown = ({ size = 14 }: { size?: number }) => <svg {...p(size)}><path d="m6 9 6 6 6-6" /></svg>;
+export const Alarm = ({ size = 14 }: { size?: number }) => <svg {...p(size)}><circle cx="12" cy="13" r="7" /><path d="M12 10v3l2 2M5 3 2 6M22 6l-3-3M6.4 18.6 4 21M17.6 18.6 20 21" /></svg>;
+export const Bell = ({ size = 16 }: { size?: number }) => <svg {...p(size)}><path d="M6 8a6 6 0 0 1 12 0c0 7 3 9 3 9H3s3-2 3-9M10.3 21a1.9 1.9 0 0 0 3.4 0" /></svg>;
+export const BellOff = ({ size = 16 }: { size?: number }) => <svg {...p(size)}><path d="M8.7 3A6 6 0 0 1 18 8c0 2.9.5 4.9 1.2 6.3M17 17H3s3-2 3-9c0-.8.1-1.6.4-2.3M10.3 21a1.9 1.9 0 0 0 3.4 0M2 2l20 20" /></svg>;

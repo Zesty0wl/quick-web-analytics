@@ -1,11 +1,21 @@
-import type { Env } from "../env";
+import { notifyCapped } from "../alerts";
+import type { Env, Site } from "../env";
 import { siteByDomain } from "../sites";
 import { isBot, pagePath, sessionAttrs } from "./enrich";
 import { clientIp, hostnameAllowed, ipBlocked } from "./ip";
 import { parsePlausiblePayload, PayloadError } from "./plausible";
 import { parseQwaPayload } from "./qwa";
 import type { RawEvent, SiteEvent } from "./types";
-import { salts, visitorId } from "./visitor";
+import { salts, utcDay, visitorId } from "./visitor";
+
+const DEFAULT_CAP = 3_000_000;
+/** A site's daily event cap (0 = none). */
+export const capFor = (env: Env, site: Site) => site.daily_cap ?? (Number(env.DEFAULT_DAILY_CAP) || DEFAULT_CAP);
+
+// Sites that hit their cap today, remembered per isolate so further events are dropped before reaching storage.
+// The cap is part of the key: raising a site's limit (picked up within a minute) lets its events through again.
+const cappedToday = new Map<number, string>();
+const capKey = (env: Env, site: Site, nowMs: number) => `${utcDay(nowMs)}|${capFor(env, site)}`;
 
 const CORS = {
   "access-control-allow-origin": "*",
@@ -34,6 +44,8 @@ async function handleEvent(req: Request, env: Env, ctx: Ctx, parse: (body: unkno
     const msg = e instanceof PayloadError ? e.message : "invalid JSON";
     return new Response(JSON.stringify({ errors: { request: msg } }), { status: 400, headers: { ...CORS, "content-type": "application/json" } });
   }
+  // Emergency stop: answer as normal, store nothing.
+  if (env.INGEST_PAUSED === "1") return new Response("ok", { status: 202, headers: CORS });
   ctx.waitUntil(ingest(raw, req, env).catch((err) => console.error("ingest failed", err)));
   return new Response("ok", { status: 202, headers: CORS });
 }
@@ -54,6 +66,7 @@ export async function ingest(raw: RawEvent, req: Request, env: Env): Promise<voi
     if (!site) continue;
     if (!hostnameAllowed(raw.url.hostname, site.allowed_hostnames)) continue;
     if (ipBlocked(ip, site.ip_blocklist)) continue;
+    if (cappedToday.get(site.id) === capKey(env, site, nowMs)) continue;
 
     const ev: SiteEvent = {
       ts: Math.floor(nowMs / 1000),
@@ -70,6 +83,11 @@ export async function ingest(raw: RawEvent, req: Request, env: Env): Promise<voi
       via: raw.via,
       session,
     };
-    await env.SITE.get(env.SITE.idFromName(String(site.id))).ingest(site.id, ev);
+    const result = await env.SITE.get(env.SITE.idFromName(String(site.id))).ingest(site.id, ev, capFor(env, site));
+    if (result === "capped" || result === "capped-first") cappedToday.set(site.id, capKey(env, site, nowMs));
+    if (result === "capped-first") {
+      console.warn("daily event cap reached", site.domain, capFor(env, site));
+      await notifyCapped(env, site, capFor(env, site), utcDay(nowMs)).catch((e) => console.error("cap email failed", e));
+    }
   }
 }

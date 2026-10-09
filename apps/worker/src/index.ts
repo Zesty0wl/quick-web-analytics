@@ -5,6 +5,7 @@ import type { Env } from "./env";
 import { corsPreflight, handlePlausibleEvent, handleQwaEvent } from "./ingest/handler";
 import { rotateSalts } from "./ingest/visitor";
 import { allSites } from "./sites";
+import { anomalyJob, intradayJob } from "./alerts";
 import { rollupSite } from "./rollup";
 
 export { SiteDO } from "./do/site";
@@ -53,6 +54,17 @@ app.use("*", async (c, next) => {
   await next();
 });
 
+// Old dashboard hostnames: the tracker routes above still answer there; everything else moves to APP_HOST.
+app.use("*", async (c, next) => {
+  const url = new URL(c.req.url);
+  const legacy = (c.env.LEGACY_APP_HOSTS ?? "").split(",").map((h) => h.trim().toLowerCase()).filter(Boolean);
+  if (c.env.APP_HOST && legacy.includes(url.hostname.toLowerCase())) {
+    const method = c.req.method;
+    return c.redirect(`https://${c.env.APP_HOST}${url.pathname}${url.search}`, method === "GET" || method === "HEAD" ? 301 : 308);
+  }
+  await next();
+});
+
 app.route("/api", api);
 app.get("/_compat/*", (c) => c.text("Not found", 404));
 app.get("/_tracker/*", (c) => c.text("Not found", 404));
@@ -87,6 +99,7 @@ export default {
   fetch: app.fetch,
   async scheduled(event, env, ctx) {
     if (event.cron === "5 0 * * *") ctx.waitUntil(rotateSalts(env.DB, Date.now()));
-    if (event.cron === "30 3 * * *") ctx.waitUntil(compactAll(env).then(() => rollupAll(env)));
+    if (event.cron === "10 * * * *") ctx.waitUntil(allSites(env).then((sites) => intradayJob(env, sites)));
+    if (event.cron === "30 3 * * *") ctx.waitUntil(compactAll(env).then(() => rollupAll(env)).then(async () => anomalyJob(env, await allSites(env))));
   },
 } satisfies ExportedHandler<Env>;

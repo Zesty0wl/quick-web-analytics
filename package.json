@@ -1,5 +1,6 @@
 {
   "name": "quick-web-analytics",
+  "version": "0.2.0",
   "private": true,
   "license": "MIT",
   "description": "Lightweight, privacy-friendly web analytics on Cloudflare",

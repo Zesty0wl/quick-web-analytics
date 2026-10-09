@@ -1,13 +1,14 @@
 import { useEffect, useMemo, useState } from "react";
+import { useMutation, useQueryClient } from "@tanstack/react-query";
 import type { Dimension, Filter, Metric, TimeGrain } from "@qwa/shared";
-import { useRealtime, useStats, type Me } from "../api";
+import { api, useAlerts, useAnomalies, useRealtime, useStats, type Me } from "../api";
 import { Busy, busyOf, Delta, MinuteBars, Spinner, UpdatedAgo, useInView } from "../components/Bits";
-import { ArrowLeft, Close, External, Search } from "../components/Icons";
-import { LineChart } from "../components/LineChart";
+import { ArrowLeft, Bell, BellOff, Close, External, Search } from "../components/Icons";
+import { LineChart, type ChartMark } from "../components/LineChart";
 import { SiteSwitcher } from "../components/SiteSwitcher";
 import { WorldMap } from "../components/WorldMap";
 import { addDays, comparisonRange, daysBetween, grainsFor, isWeekend, shortDate, weekday, type Compare } from "../dates";
-import { compact, DIMENSION_LABELS, displayValue, duration, liveUrl, metricValue, METRIC_LABELS, whole } from "../format";
+import { compact, describeAnomaly, DIMENSION_LABELS, displayValue, duration, liveUrl, metricValue, METRIC_LABELS, whole } from "../format";
 import { globalParams, linkHandler, readSiteState, withParams, type Navigate, type SiteState } from "../url";
 
 export const SECTIONS = [
@@ -228,6 +229,7 @@ function Detail({ sites, site, state, url, navigate, dates, compare, periodText,
   const series = useStats(site.id, { from, to, metrics: seriesMetrics, groupBy: grain, filters });
   const cmpSeries = useStats(site.id, { from: cmp.from, to: cmp.to, metrics: seriesMetrics, groupBy: grain, filters });
   const rt = useRealtime(site.id);
+  const anomalies = useAnomalies(site.id, from, to);
 
   const t = totals.data?.rows[0] ?? {};
   const p = cmpTotals.data?.rows[0];
@@ -238,6 +240,16 @@ function Detail({ sites, site, state, url, navigate, dates, compare, periodText,
   const dataGrain = grainOf(rows) ?? grain;
   const keys = rows.map((r) => String(r[dataGrain]));
   const cmpRows = grainOf(cmpSeries.data?.rows ?? []) === dataGrain ? cmpSeries.data!.rows : [];
+  // Anomalies (daily) placed on whichever bucket contains their day; none on the hourly view.
+  const marks: ChartMark[] = useMemo(() => {
+    if (dataGrain === "hour") return [];
+    return (anomalies.data?.anomalies ?? []).flatMap((a) => {
+      const index = keys.findIndex((k, i) =>
+        dataGrain === "day" ? k === a.day : dataGrain === "week" ? k <= a.day && a.day < (keys[i + 1] ?? addDays(k, 7)) : k.slice(0, 7) === a.day.slice(0, 7),
+      );
+      return index < 0 ? [] : [{ index, kind: a.kind, text: dataGrain === "day" ? describeAnomaly(a) : `${weekday(a.day)} ${shortDate(a.day)}: ${describeAnomaly(a)}` }];
+    });
+  }, [anomalies.data, keys, dataGrain]);
   const chartBusy = (!!totals.data && busyOf(totals, cmpTotals)) || (rows.length > 0 && busyOf(series, cmpSeries));
 
   const onBucket = (i: number) => {
@@ -265,6 +277,7 @@ function Detail({ sites, site, state, url, navigate, dates, compare, periodText,
           </div>
           <div className="sub">{site.domain} · {periodText} compared with {cmpText}</div>
         </div>
+        <AlertBell siteId={site.id} />
         <div className="livebox" aria-live="polite">
           <span className={rt.data?.visitors5m ? "livedot" : "livedot off"} aria-hidden />
           <b>{rt.data?.visitors5m ?? "–"}</b>
@@ -272,6 +285,12 @@ function Detail({ sites, site, state, url, navigate, dates, compare, periodText,
         </div>
       </header>
 
+      {rt.data?.cappedAt && (
+        <div className="callout cap-banner">
+          <b>Recording paused for today.</b> {site.domain} hit its daily event limit at{" "}
+          {new Date(rt.data.cappedAt * 1000).toLocaleTimeString("en-GB", { hour: "2-digit", minute: "2-digit", timeZone: "UTC" })} UTC, so today's numbers stop there. It restarts at midnight UTC, or as soon as an admin raises the limit (Admin → Sites → Settings).
+        </div>
+      )}
       {filters.length > 0 && (
         <div className="filters">
           {filters.map(([dim, op, value], i) => {
@@ -317,7 +336,7 @@ function Detail({ sites, site, state, url, navigate, dates, compare, periodText,
           />
         </div>
         {rows.length > 0 ? (
-          <LineChart keys={keys} current={rows.map((r) => Number(r[state.metric] ?? 0))} compareKeys={cmpRows.map((r) => String(r[dataGrain]))} compare={cmpRows.map((r) => Number(r[state.metric] ?? 0))} metric={state.metric} grain={dataGrain} onSelect={dataGrain === "hour" ? undefined : onBucket} />
+          <LineChart keys={keys} current={rows.map((r) => Number(r[state.metric] ?? 0))} compareKeys={cmpRows.map((r) => String(r[dataGrain]))} compare={cmpRows.map((r) => Number(r[state.metric] ?? 0))} metric={state.metric} grain={dataGrain} onSelect={dataGrain === "hour" ? undefined : onBucket} marks={marks} />
         ) : (
           <ChartPlaceholder busy={busyOf(series)} error={series.error as Error | null} />
         )}
@@ -348,6 +367,32 @@ function Detail({ sites, site, state, url, navigate, dates, compare, periodText,
       <HeatmapSection c={c} />
       {span > 1 && span <= 120 && <DaysSection c={c} onDay={(d) => zoomTo(d, d)} />}
     </div>
+  );
+}
+
+/** Per-user, per-site switch for anomaly emails. */
+function AlertBell({ siteId }: { siteId: number }) {
+  const alerts = useAlerts();
+  const qc = useQueryClient();
+  const all = alerts.data?.all ?? false;
+  const on = all || (alerts.data?.sites.includes(siteId) ?? false);
+  const toggle = useMutation({
+    mutationFn: (next: boolean) => api(`/sites/${siteId}/alerts`, { method: "PUT", body: JSON.stringify({ on: next }) }),
+    onSuccess: () => qc.invalidateQueries({ queryKey: ["alerts"] }),
+  });
+  if (!alerts.data) return null;
+  const title = all
+    ? "You get alerts for every site. Change this in Admin → Alerts."
+    : on
+    ? "You'll get an email when this site has an unusual day. Click to stop."
+    : alerts.data.email
+      ? "Email me when this site has an unusual day (a spike, a drop or a possible outage)"
+      : "Email me about unusual days (email isn't set up on this server yet, so nothing will be sent until it is)";
+  return (
+    <button className={on ? "btn btn-secondary bell on" : "btn btn-secondary bell"} onClick={() => toggle.mutate(!on)} disabled={toggle.isPending || all} aria-pressed={on} title={title}>
+      {on ? <Bell /> : <BellOff />}
+      <span style={{ fontSize: 13, fontWeight: 600 }}>{on ? "Alerts on" : "Alerts off"}</span>
+    </button>
   );
 }
 
