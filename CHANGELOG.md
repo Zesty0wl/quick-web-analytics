@@ -29,6 +29,7 @@ All notable changes to Quick Web Analytics. Dates are UTC. Database changes ship
   - Access setup through the API
   - cost brakes, alert emails and Google data (including a `gcloud` route)
 - `CLAUDE.md` points Claude Code at `AGENTS.md`.
+- **Admin → Sites → Install: "Copy prompt for your agent".** A prompt for the site's coding agent that adds or updates the snippet in the right place for the framework (Next.js, Astro, WordPress, static generators…). It also handles a Content-Security-Policy, replaces an old Plausible tag when the site is migrating, offers custom events, and verifies events arrive.
 
 ### Upgrade notes
 

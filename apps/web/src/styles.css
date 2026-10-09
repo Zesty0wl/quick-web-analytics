@@ -541,3 +541,7 @@ details[open] summary { margin-bottom: 8px; }
 .install .row .btn.btn-secondary:hover { background: color-mix(in srgb, var(--color-text) 7%, transparent); }
 .install .row .btn:disabled { opacity: .45; cursor: not-allowed; }
 .panel-head .vital { margin-left: auto; }
+/* Admin → Sites → Install: the AI agent prompt */
+.agent-box { display: grid; gap: 10px; padding: 12px 14px; border-left: 4px solid var(--color-accent); background: var(--color-surface); }
+.agent-box p { margin: 4px 0 0; }
+.agent-prompt { max-height: 360px; overflow: auto; white-space: pre-wrap; font-size: 12px; }

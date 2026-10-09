@@ -114,7 +114,7 @@ cd ../..
 
 1. Open your hostname and sign in with a `BOOTSTRAP_ADMINS` email. Your first sign-in creates your admin account.
 2. **Admin → Sites → Add a site:** enter the domain (without `www.`) and the timezone that days should follow in reports.
-3. The **Install** tab shows the snippet. Put it in every page's `<head>`:
+3. The **Install** tab shows the snippet, and a **Copy prompt for your agent** button. If the site's code is worked on with an AI coding agent, paste the prompt into it: it adds (or updates) the snippet in the right place for the site's framework, deals with a Content-Security-Policy or an old Plausible tag, and checks events arrive. Otherwise, put the snippet in every page's `<head>`:
 
    ```html
    <script defer src="https://analytics.example.com/t.js" data-site="example.com"></script>

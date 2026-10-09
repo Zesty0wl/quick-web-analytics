@@ -338,12 +338,48 @@ function SiteCard({ site, status, open, onToggle }: { site: SiteRow; status: Sit
   );
 }
 
+/**
+ * A prompt to paste into an AI coding agent (Claude Code, Codex, Cursor…) working in the site's repository: it adds or
+ * updates the snippet in the right place for the framework, handles CSP and an old Plausible tag, and verifies it.
+ */
+function agentPrompt(site: SiteRow, snippet: string, opts: { migrating: boolean; hash: boolean }): string {
+  const origin = location.origin;
+  return `Add Quick Web Analytics (QWA), a cookieless analytics tracker, to this website: ${site.domain}.
+
+1. Add this script tag so it loads on every page, inside <head>:
+
+   ${snippet}
+
+   Put it in the shared layout or template that renders <head> for every page, once. Examples:
+   - Next.js: app/layout.tsx (App Router) or pages/_document.tsx (Pages Router). A plain <script> in <head> is fine; if you use next/script, use strategy="afterInteractive" and keep every data-* attribute.
+   - Astro, SvelteKit, Nuxt, Remix: the root layout (e.g. src/layouts/Layout.astro, src/app.html, app.head in nuxt.config, app/root.tsx).
+   - Hugo, Jekyll, Eleventy and other static generators: the base layout or head partial.
+   - WordPress: the active theme's header.php just before wp_head(), or a "header scripts" plugin.
+   - Plain HTML: the <head> of every page, or the shared include.
+   Keep the attributes exactly as given and load the script from that URL: don't download, bundle or self-host it.${opts.hash ? "" : `
+   If the site is a single-page app that routes with #/ URLs, add data-hash to the tag.`}
+
+2. ${opts.migrating
+    ? `This site currently uses Plausible. Remove the old Plausible <script> tag (it loads a script from plausible.io or a /js/script… path on a Plausible host) and any duplicate of it. Keep existing plausible(...) calls and plausible-event-* classes: QWA understands them, and reports continue with the same event names.`
+    : `If the site already has a QWA tag (src ending /t.js with data-site), replace it rather than adding a second. If it has a Plausible tag, ask me whether to remove it.`}
+
+3. If the site sets a Content-Security-Policy (a header or a <meta http-equiv>), add ${origin} to script-src and connect-src.
+
+4. Outbound links and file downloads are tracked automatically. Ask me whether there are key actions worth tracking as custom events (sign-ups, purchases, contact forms). If so, use qwa("Signup", { props: { plan: "pro" } }) in code, or class="qwa-event-name=Signup" on a link or button.
+
+5. Verify: run the site, open a page and check that the browser sends a POST to ${origin}/e that returns 202. Visits from localhost are ignored, so add data-local to the tag while testing and remove it before committing. Don't add cookie-consent changes for QWA: it sets no cookies.
+
+When you're done, tell me which file(s) you changed. Once it's deployed, Admin → Sites → ${site.domain} → Install in the QWA dashboard shows "Receiving data".`;
+}
+
 function Install({ site, status }: { site: SiteRow; status: SiteStatus | null | undefined }) {
   const qc = useQueryClient();
   const [hash, setHash] = useState(false);
   const [noOutbound, setNoOutbound] = useState(false);
   const [noDownloads, setNoDownloads] = useState(false);
   const [copied, setCopied] = useState(false);
+  const [copiedPrompt, setCopiedPrompt] = useState(false);
+  const [showPrompt, setShowPrompt] = useState(false);
   const attrs = [`data-site="${site.domain}"`, hash && "data-hash", noOutbound && "data-no-outbound", noDownloads && "data-no-downloads"].filter(Boolean).join(" ");
   const snippet = `<script defer src="${location.origin}/t.js" ${attrs}></script>`;
   const waiting = !status?.lastEventAt;
@@ -365,10 +401,27 @@ function Install({ site, status }: { site: SiteRow; status: SiteStatus | null | 
     setCopied(true);
     setTimeout(() => setCopied(false), 1500);
   };
+  const prompt = agentPrompt(site, snippet, { migrating: !!status && status.plausible14d > 0, hash });
+  const copyPrompt = async () => {
+    await navigator.clipboard.writeText(prompt);
+    setCopiedPrompt(true);
+    setTimeout(() => setCopiedPrompt(false), 1500);
+  };
 
   return (
     <div className="install">
-      <p>Add this to the <code>&lt;head&gt;</code> of every page on <b>{site.domain}</b>:</p>
+      <div className="agent-box">
+        <div>
+          <b>With your AI agent</b>
+          <p className="hint">Open your coding agent (Claude Code, Codex, Cursor…) in {site.domain}'s code, then paste this prompt. It adds or updates the snippet in the right place for the site's framework and checks it works.</p>
+        </div>
+        <div className="row">
+          <button onClick={copyPrompt}>{copiedPrompt ? "Copied ✓" : "Copy prompt for your agent"}</button>
+          <button className="btn btn-ghost" onClick={() => setShowPrompt((v) => !v)}>{showPrompt ? "Hide prompt" : "Show prompt"}</button>
+        </div>
+        {showPrompt && <pre className="snippet agent-prompt"><code>{prompt}</code></pre>}
+      </div>
+      <p><b>By hand:</b> add this to the <code>&lt;head&gt;</code> of every page on <b>{site.domain}</b>:</p>
       <pre className="snippet"><code>{snippet}</code></pre>
       <div className="row">
         <button onClick={copy}>{copied ? "Copied ✓" : "Copy snippet"}</button>

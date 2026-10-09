@@ -79,7 +79,7 @@ Follow **[docs/DEPLOY.md](docs/DEPLOY.md)**. Allow about 20 minutes. In short:
 4. Put the dashboard behind Cloudflare Access.
 5. Optionally, connect Google under **Admin → Google**, which walks you through it in the browser.
 
-Then add the snippet to your site:
+Then add the snippet to your site. **Admin → Sites → Install** also has a ready-made prompt to paste into your coding agent, which puts it in the right place for your framework:
 
 ```html
 <script defer src="https://analytics.example.com/t.js" data-site="example.com"></script>
