@@ -8,6 +8,11 @@ import { sampleAlert } from "./email";
 import { createDemoSites, demoTick, seededMarker, seedHistory, seedToday } from "./demo";
 import { rollupSite, storedDays, type DayStats } from "./rollup";
 import { addDays, localMidnight, todayIn } from "./tz";
+import { alpha2 } from "./iso3";
+import {
+  apiKey, cruxHistory, GoogleError, gscProperties, pagePath, parseServiceAccount, propertyFor, saveSetting, searchAnalytics, serviceAccount, SETTING_KEY, SETTING_SA,
+  speedRuns, testApiKey, testServiceAccount, testSite, type SearchDim, type SearchRow,
+} from "./google";
 
 type Ctx = { Bindings: Env; Variables: { user: User } };
 
@@ -209,6 +214,120 @@ api.get("/sites/:site/realtime", async (c) => {
   return c.json(await c.env.SITE.get(c.env.SITE.idFromName(String(site.id))).realtime());
 });
 
+// ---------- Google: Search Console and speed ----------
+
+const googleError = (c: { json: (b: unknown, s: 502) => Response }, e: unknown) => {
+  if (e instanceof GoogleError) return c.json({ error: e.message }, (e.status === 503 ? 502 : e.status) as 502);
+  throw e;
+};
+const ZERO: Omit<SearchRow, "key"> = { clicks: 0, impressions: 0, ctr: 0, position: 0 };
+// Search Console keeps 16 months.
+const gscFloor = () => new Date(Date.now() - 480 * 86_400_000).toISOString().slice(0, 10);
+
+/** Is Search Console connected for this site? Returns the property, or a JSON reply explaining why not. */
+async function searchSetup(env: Env, site: NonNullable<Awaited<ReturnType<typeof siteById>>>) {
+  const sa = await serviceAccount(env);
+  if (!sa) return { reply: { status: "not-connected" as const } };
+  const property = await propertyFor(env, site);
+  if (!property) return { reply: { status: "no-property" as const, account: sa.client_email } };
+  return { property };
+}
+
+/** Clicks, impressions, CTR and position for the range and the comparison range, with daily series. */
+api.get("/sites/:site/search", async (c) => {
+  const site = await siteGuard(c);
+  if (!site) return c.json({ error: "site not found" }, 404);
+  const q = (k: string) => c.req.query(k) ?? "";
+  let from = q("from"), cfrom = q("cfrom");
+  const to = q("to"), cto = q("cto");
+  if (![from, to, cfrom, cto].every((d) => DATE.test(d)) || from > to || cfrom > cto) return c.json({ error: "from/to/cfrom/cto must be YYYY-MM-DD ranges" }, 400);
+  try {
+    const setup = await searchSetup(c.env, site);
+    if (!setup.property) return c.json(setup.reply);
+    from = from < gscFloor() ? gscFloor() : from;
+    cfrom = cfrom < gscFloor() ? gscFloor() : cfrom;
+    const filters = { page: q("page") || undefined, query: q("query") || undefined };
+    const run = (a: string, b: string, dim?: SearchDim) => (a > b ? Promise.resolve([]) : searchAnalytics(c.env, site, setup.property, { from: a, to: b, dim, filters }));
+    const [cur, prev, series, prevSeries] = await Promise.all([run(from, to), run(cfrom, cto), run(from, to, "date"), run(cfrom, cto, "date")]);
+    const strip = ({ key, ...r }: SearchRow) => r;
+    const day = (r: SearchRow) => ({ day: r.key, clicks: r.clicks, impressions: r.impressions, ctr: r.ctr, position: r.position });
+    return c.json({
+      status: "ok",
+      property: setup.property,
+      totals: cur[0] ? strip(cur[0]) : ZERO,
+      previous: prev[0] ? strip(prev[0]) : ZERO,
+      series: series.map(day),
+      prevSeries: prevSeries.map(day),
+      // The newest day Google has anything for (it trails by a day or two).
+      latest: series.length ? series[series.length - 1].key : null,
+    });
+  } catch (e) {
+    return googleError(c, e);
+  }
+});
+
+/** Top queries, pages, countries or devices from Google Search, with clicks in the comparison range. */
+api.get("/sites/:site/search/rows", async (c) => {
+  const site = await siteGuard(c);
+  if (!site) return c.json({ error: "site not found" }, 404);
+  const q = (k: string) => c.req.query(k) ?? "";
+  const dim = q("dim") as SearchDim;
+  let from = q("from"), cfrom = q("cfrom");
+  const to = q("to"), cto = q("cto");
+  if (!["query", "page", "country", "device"].includes(dim)) return c.json({ error: "dim must be query, page, country or device" }, 400);
+  if (![from, to, cfrom, cto].every((d) => DATE.test(d)) || from > to || cfrom > cto) return c.json({ error: "from/to/cfrom/cto must be YYYY-MM-DD ranges" }, 400);
+  const limit = Math.min(Math.max(Number(q("limit")) || 10, 1), 500);
+  try {
+    const setup = await searchSetup(c.env, site);
+    if (!setup.property) return c.json(setup.reply);
+    from = from < gscFloor() ? gscFloor() : from;
+    cfrom = cfrom < gscFloor() ? gscFloor() : cfrom;
+    const filters = { page: q("page") || undefined, query: q("query") || undefined };
+    const [rows, prev] = await Promise.all([
+      searchAnalytics(c.env, site, setup.property, { from, to, dim, filters, limit }),
+      cfrom > cto ? Promise.resolve([]) : searchAnalytics(c.env, site, setup.property, { from: cfrom, to: cto, dim, filters, limit: 1000 }),
+    ]);
+    const prevClicks = new Map(prev.map((r) => [r.key, r.clicks]));
+    return c.json({
+      status: "ok",
+      rows: rows.map((r) => {
+        const out = { ...r, prevClicks: prevClicks.get(r.key) ?? 0 };
+        if (dim === "country") return { ...out, key: alpha2(r.key) };
+        if (dim === "device") return { ...out, key: r.key.charAt(0) + r.key.slice(1).toLowerCase() };
+        if (dim !== "page") return out;
+        const p = pagePath(r.key, site.domain);
+        return { ...out, url: r.key, key: p.path, local: p.local };
+      }),
+    });
+  } catch (e) {
+    return googleError(c, e);
+  }
+});
+
+/** Stored PageSpeed tests (lab + Chrome field data) and the Chrome UX Report's weekly history for the origin. */
+api.get("/sites/:site/speed", async (c) => {
+  const site = await siteGuard(c);
+  if (!site) return c.json({ error: "site not found" }, 404);
+  if (!(await apiKey(c.env))) return c.json({ status: "not-connected" });
+  const origin = `https://${site.domain}`;
+  const quiet = (p: Promise<unknown>) => p.catch((e) => (console.warn("crux history failed", site.domain, (e as Error).message), null));
+  const [runs, phone, desktop] = await Promise.all([speedRuns(c.env, site.id, 180), quiet(cruxHistory(c.env, origin, "PHONE")), quiet(cruxHistory(c.env, origin, "DESKTOP"))]);
+  return c.json({ status: "ok", url: `${origin}/`, runs, crux: { phone, desktop } });
+});
+
+/** Run a PageSpeed test of the home page now (mobile and desktop, usually under a minute). Admins only. */
+api.post("/sites/:site/speed/test", async (c) => {
+  if (c.get("user").role !== "admin") return c.json({ error: "admins only" }, 403);
+  const site = await siteGuard(c);
+  if (!site) return c.json({ error: "site not found" }, 404);
+  try {
+    const { results, errors } = await testSite(c.env, site);
+    return c.json({ status: "ok", results, errors });
+  } catch (e) {
+    return googleError(c, e);
+  }
+});
+
 // ---------- admin ----------
 
 const admin = new Hono<Ctx>();
@@ -246,7 +365,10 @@ admin.post("/sites", async (c) => {
 
 admin.patch("/sites/:site", async (c) => {
   const id = Number(c.req.param("site"));
-  const body = await c.req.json<{ timezone?: string; allowed_hostnames?: string[]; ip_blocklist?: string[]; daily_cap?: number | null }>();
+  const body = await c.req.json<{ timezone?: string; allowed_hostnames?: string[]; ip_blocklist?: string[]; daily_cap?: number | null; gsc_property?: string | null }>();
+  if (body.gsc_property !== undefined && body.gsc_property !== null && !(body.gsc_property === "" || /^(sc-domain:[a-z0-9.-]+|https?:\/\/\S+\/)$/.test(body.gsc_property))) {
+    return c.json({ error: "gsc_property must be a Search Console property (sc-domain:example.com or https://example.com/), \"\" for off, or null for automatic" }, 400);
+  }
   if (body.daily_cap !== undefined && body.daily_cap !== null && !(Number.isInteger(body.daily_cap) && body.daily_cap >= 0)) {
     return c.json({ error: "daily_cap must be a whole number (0 = no limit) or null (default)" }, 400);
   }
@@ -265,7 +387,79 @@ admin.patch("/sites/:site", async (c) => {
     )
     .run();
   if (body.daily_cap !== undefined) await c.env.DB.prepare("UPDATE sites SET daily_cap = ? WHERE id = ?").bind(body.daily_cap, id).run();
+  if (body.gsc_property !== undefined) await c.env.DB.prepare("UPDATE sites SET gsc_property = ? WHERE id = ?").bind(body.gsc_property, id).run();
   invalidateSites();
+  return c.json({ ok: true });
+});
+
+/** Google connection status: the service account, which properties it can read and which site each matches. */
+admin.get("/google", async (c) => {
+  const sa = await serviceAccount(c.env);
+  const key = await apiKey(c.env);
+  let properties: string[] = [];
+  let error: string | null = null;
+  if (sa) {
+    try {
+      properties = await gscProperties(c.env, c.req.query("fresh") === "1");
+    } catch (e) {
+      error = (e as Error).message;
+    }
+  }
+  const { results } = await c.env.DB.prepare("SELECT site_id, MAX(run_at) run_at FROM speed_runs GROUP BY site_id").all<{ site_id: number; run_at: number }>();
+  const lastRun = new Map(results.map((r) => [r.site_id, r.run_at]));
+  const sites = await Promise.all(
+    (await allSites(c.env)).map(async (s) => ({
+      id: s.id,
+      domain: s.domain,
+      setting: s.gsc_property,
+      property: sa && !error ? await propertyFor(c.env, s).catch(() => null) : null,
+      lastSpeedTest: lastRun.get(s.id) ?? null,
+    })),
+  );
+  return c.json({
+    account: sa?.client_email ?? null,
+    accountSource: sa?.source ?? null,
+    projectId: sa?.project_id ?? null,
+    apiKey: !!key,
+    apiKeySource: key?.source ?? null,
+    properties,
+    error,
+    sites,
+  });
+});
+
+/** Save a service account key file (its JSON text) after checking it can sign in and call Search Console. */
+admin.put("/google/service-account", async (c) => {
+  const { json } = await c.req.json<{ json?: string }>();
+  const sa = typeof json === "string" && json.length < 20_000 ? parseServiceAccount(json) : null;
+  if (!sa) return c.json({ error: "That isn't a service account key file. In Google Cloud, open the service account → Keys → Add key → Create new key → JSON, and upload the file it downloads." }, 400);
+  try {
+    const properties = await testServiceAccount(sa);
+    await saveSetting(c.env, SETTING_SA, JSON.stringify(sa));
+    return c.json({ account: sa.client_email, properties: properties.length });
+  } catch (e) {
+    return c.json({ error: (e as Error).message }, 400);
+  }
+});
+
+admin.delete("/google/service-account", async (c) => {
+  await saveSetting(c.env, SETTING_SA, null);
+  return c.json({ ok: true });
+});
+
+/** Save a Google API key after checking it works for PageSpeed Insights and the Chrome UX Report. */
+admin.put("/google/api-key", async (c) => {
+  const { key } = await c.req.json<{ key?: string }>();
+  const k = (key ?? "").trim();
+  if (!/^AIza[0-9A-Za-z_-]{35}$/.test(k)) return c.json({ error: "That doesn't look like a Google API key (they start with AIza and are 39 characters)." }, 400);
+  const problem = await testApiKey(k);
+  if (problem) return c.json({ error: `Google rejected the key. ${problem}` }, 400);
+  await saveSetting(c.env, SETTING_KEY, k);
+  return c.json({ ok: true });
+});
+
+admin.delete("/google/api-key", async (c) => {
+  await saveSetting(c.env, SETTING_KEY, null);
   return c.json({ ok: true });
 });
 

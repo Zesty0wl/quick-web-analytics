@@ -42,5 +42,6 @@
     // "INGEST_PAUSED": "1",                                       // emergency stop: accept and discard all tracking events
     // "ORIGIN_MODE": "mirror"   // see docs/MIGRATING.md: keep a self-hosted Plausible fed while you switch
   }
-  // Secrets (set with `npx wrangler secret put NAME`): ACCESS_TEAM_DOMAIN, ACCESS_AUD, BOOTSTRAP_ADMINS
+  // Secrets (set with `npx wrangler secret put NAME`): ACCESS_TEAM_DOMAIN, ACCESS_AUD, BOOTSTRAP_ADMINS,
+  // and optionally GOOGLE_SERVICE_ACCOUNT and GOOGLE_API_KEY for Search Console and speed data (docs/DEPLOY.md).
 }

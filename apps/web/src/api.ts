@@ -129,3 +129,88 @@ export function useRealtime(siteId: number | undefined) {
     refetchInterval: 10_000,
   });
 }
+
+// ---------- Google: Search Console and speed ----------
+
+export interface SearchTotals {
+  clicks: number;
+  impressions: number;
+  /** 0–1 */
+  ctr: number;
+  /** Average position in Google results (1 = top). */
+  position: number;
+}
+export interface SearchDay extends SearchTotals {
+  day: string;
+}
+export type SearchSummary =
+  | { status: "not-connected" }
+  | { status: "no-property"; account: string }
+  | { status: "ok"; property: string; totals: SearchTotals; previous: SearchTotals; series: SearchDay[]; prevSeries: SearchDay[]; latest: string | null };
+
+export interface SearchRow extends SearchTotals {
+  key: string;
+  prevClicks: number;
+  /** Pages: the full URL, and whether it is on this site (so it can become a page filter). */
+  url?: string;
+  local?: boolean;
+}
+export type SearchDim = "query" | "page" | "country" | "device";
+export interface SearchParams {
+  from: string;
+  to: string;
+  cfrom: string;
+  cto: string;
+  page?: string;
+  query?: string;
+}
+
+const searchQs = (p: SearchParams & { dim?: string; limit?: number }) =>
+  new URLSearchParams(Object.entries(p).filter(([, v]) => v !== undefined && v !== "").map(([k, v]) => [k, String(v)]));
+
+export function useSearch(siteId: number, p: SearchParams, enabled: boolean) {
+  return useQuery({
+    queryKey: ["search", siteId, p],
+    queryFn: () => api<SearchSummary>(`/sites/${siteId}/search?${searchQs(p)}`),
+    enabled,
+    staleTime: 30 * 60_000,
+    placeholderData: (prev) => prev,
+    retry: 1,
+  });
+}
+
+export function useSearchRows(siteId: number, p: SearchParams & { dim: SearchDim; limit?: number }, enabled: boolean) {
+  return useQuery({
+    queryKey: ["search-rows", siteId, p],
+    queryFn: () => api<{ status: string; rows?: SearchRow[] }>(`/sites/${siteId}/search/rows?${searchQs(p)}`),
+    enabled,
+    staleTime: 30 * 60_000,
+    placeholderData: (prev) => prev,
+    retry: 1,
+  });
+}
+
+export interface LabMetrics { lcp: number | null; cls: number | null; tbt: number | null; fcp: number | null; si: number | null; ttfb: number | null }
+export interface FieldMetrics { scope: "url" | "origin"; lcp: number | null; inp: number | null; cls: number | null; fcp: number | null; ttfb: number | null; verdict: "FAST" | "AVERAGE" | "SLOW" | null }
+export interface SpeedRun {
+  url: string;
+  strategy: "mobile" | "desktop";
+  runAt: number;
+  score: number | null;
+  lab: LabMetrics;
+  field: FieldMetrics | null;
+  opportunities: { id: string; title: string; savingsMs: number }[];
+}
+export interface CruxHistory { dates: string[]; lcp: (number | null)[]; inp: (number | null)[]; cls: (number | null)[] }
+export type SpeedData =
+  | { status: "not-connected" }
+  | { status: "ok"; url: string; runs: SpeedRun[]; crux: { phone: CruxHistory | null; desktop: CruxHistory | null } };
+
+export function useSpeed(siteId: number, enabled: boolean) {
+  return useQuery({
+    queryKey: ["speed", siteId],
+    queryFn: () => api<SpeedData>(`/sites/${siteId}/speed`),
+    enabled,
+    staleTime: 10 * 60_000,
+  });
+}

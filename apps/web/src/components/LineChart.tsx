@@ -21,6 +21,8 @@ interface Props {
   onSelect?: (index: number) => void;
   /** Anomalies: an alarm icon above the point, explained in the tooltip. */
   marks?: ChartMark[];
+  /** For values that aren't dashboard metrics (e.g. Search Console's CTR): label and formatting. */
+  fmt?: { label: string; value: (v: number) => string; count?: boolean };
 }
 
 /** A "nice" axis maximum: 1, 2, 2.5 or 5 × 10^n. */
@@ -37,7 +39,9 @@ const NON_COUNT = new Set<Metric>(["bounce_rate", "scroll_depth", "visit_duratio
 const W = 1000;
 const H = 300;
 
-export function LineChart({ keys, current, compareKeys, compare, metric, grain, height = 320, onSelect, marks = [] }: Props) {
+export function LineChart({ keys, current, compareKeys, compare, metric, grain, height = 320, onSelect, marks = [], fmt }: Props) {
+  const label = fmt?.label ?? METRIC_LABELS[metric];
+  const show = (v: number) => (fmt ? fmt.value(v) : metricValue(metric, v));
   const plot = useRef<HTMLDivElement>(null);
   const [hover, setHover] = useState<number | null>(null);
   const n = keys.length;
@@ -49,7 +53,8 @@ export function LineChart({ keys, current, compareKeys, compare, metric, grain, 
   const line = path(current);
   const area = n ? `${line}L${x(n - 1).toFixed(1)},${H}L${x(0).toFixed(1)},${H}Z` : "";
   // One format for the whole axis: compact (2.5k, 10k) once the top tick reaches 10k, so labels don't mix styles.
-  const tick = (v: number) => (max >= 10_000 && !NON_COUNT.has(metric) ? axisFmt.format(v) : metricValue(metric, v, { compact: true }));
+  const isCount = fmt ? !!fmt.count : !NON_COUNT.has(metric);
+  const tick = (v: number) => (max >= 10_000 && isCount ? axisFmt.format(v) : fmt ? fmt.value(v) : metricValue(metric, v, { compact: true }));
   const grid = [0, 0.25, 0.5, 0.75, 1].map((f) => ({ top: (1 - f) * 100, label: tick(max * f), base: f === 0 }));
   const xl = n <= 1 ? [0] : Array.from({ length: Math.min(6, n) }, (_, k) => Math.round((k * (n - 1)) / (Math.min(6, n) - 1)));
 
@@ -81,7 +86,7 @@ export function LineChart({ keys, current, compareKeys, compare, metric, grain, 
           onMouseLeave={() => setHover(null)}
           onClick={() => h !== null && onSelect?.(h)}
           role="img"
-          aria-label={`${METRIC_LABELS[metric]} over time`}
+          aria-label={`${label} over time`}
         >
           {grid.map((g) => <div key={g.top} className={g.base ? "grid base" : "grid"} style={{ top: `${g.top}%` }} />)}
           <svg viewBox={`0 0 ${W} ${H}`} preserveAspectRatio="none">
@@ -109,9 +114,9 @@ export function LineChart({ keys, current, compareKeys, compare, metric, grain, 
               <div className="mk" style={{ left: `${hx}%`, top: `${(y(cur) / H) * 100}%` }} />
               <div className="tip" style={{ left: `${hx}%`, transform: flip ? "translateX(calc(-100% - 12px))" : "translateX(12px)" }}>
                 <div className="d">{bucketTitle(keys[h], grain)}</div>
-                <div className="r"><span>{METRIC_LABELS[metric]}</span><b>{metricValue(metric, cur)}</b></div>
+                <div className="r"><span>{label}</span><b>{show(cur)}</b></div>
                 {prev !== undefined && (
-                  <div className="r p"><span>{compareKeys?.[h] ? bucketTitle(compareKeys[h], grain) : "Comparison"}</span><span>{metricValue(metric, prev)}</span></div>
+                  <div className="r p"><span>{compareKeys?.[h] ? bucketTitle(compareKeys[h], grain) : "Comparison"}</span><span>{show(prev)}</span></div>
                 )}
                 {ch !== null && <div className="ch">{ch > 0 ? "+" : ch < 0 ? "−" : ""}{Math.abs(ch).toFixed(1)}%</div>}
                 {hoverMarks.map((m) => (

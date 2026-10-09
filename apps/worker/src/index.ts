@@ -7,6 +7,7 @@ import { rotateSalts } from "./ingest/visitor";
 import { allSites } from "./sites";
 import { anomalyJob, intradayJob } from "./alerts";
 import { rollupSite } from "./rollup";
+import { speedJob } from "./google";
 
 export { SiteDO } from "./do/site";
 
@@ -100,6 +101,8 @@ export default {
   async scheduled(event, env, ctx) {
     if (event.cron === "5 0 * * *") ctx.waitUntil(rotateSalts(env.DB, Date.now()));
     if (event.cron === "10 * * * *") ctx.waitUntil(allSites(env).then((sites) => intradayJob(env, sites)));
+    // PageSpeed tests once a day, on the hourly trigger (after the nightly jobs, before most visitors are up).
+    if (event.cron === "10 * * * *" && new Date(event.scheduledTime).getUTCHours() === 4) ctx.waitUntil(allSites(env).then((sites) => speedJob(env, sites)));
     if (event.cron === "30 3 * * *") ctx.waitUntil(compactAll(env).then(() => rollupAll(env)).then(async () => anomalyJob(env, await allSites(env))));
   },
 } satisfies ExportedHandler<Env>;

@@ -20,6 +20,7 @@ No cookies, no servers to look after, no per-pageview pricing. A 2 KB tracker, a
   - **Metrics and chart:** nine metrics, each with its change, and a chart with the comparison period overlaid. Click the chart to zoom into a day, week or month.
   - **Breakdowns:** realtime with a live map, sources and channels, pages (entry and exit too), UTM campaigns, custom events, devices and browsers, countries and cities.
   - **Day-by-day views:** a weekday × hour heatmap, and a day-by-day table with day-over-day and week-over-week change.
+- **Google data (optional):** Search Console clicks, impressions, positions and queries on each site's page, plus nightly PageSpeed tests and real-visitor Core Web Vitals from the Chrome UX Report.
 - **Anomaly alerts:** unusual days (spikes, drops, possible outages) are spotted against the same weekday's usual range, hourly for the day so far and nightly for whole days, and marked with an alarm on the chart. Anyone can opt in to an email per site (Cloudflare Email Sending).
 - **Cost brakes:** a daily event limit per site (recording pauses until midnight, admins are emailed), an emergency stop, and guidance for an edge rate limit and billing alerts. Cloudflare has no hard spending cap, so QWA brings its own.
 - **Everything filters:** click any row to filter the whole page by it, then flip a filter between *is* and *is not*.
@@ -54,13 +55,29 @@ Open <http://localhost:8787>. The demo:
 
 ## Deploy your own
 
-See **[docs/DEPLOY.md](docs/DEPLOY.md)**. In short:
+### With an AI agent (recommended)
+
+QWA is set up to be deployed by an AI coding agent such as Claude Code, Codex or Cursor. [AGENTS.md](AGENTS.md) is its runbook: every step, how to check it, and where to stop and ask you.
+
+1. **Give the agent access:** a Cloudflare API token with the permissions listed in [AGENTS.md](AGENTS.md#what-the-person-provides). Export it as `CLOUDFLARE_API_TOKEN` (and your account ID as `CLOUDFLARE_ACCOUNT_ID`) in the shell you start the agent from, so you never paste it into the chat.
+2. **Clone the repository, start your agent in it, and say:**
+   > Deploy Quick Web Analytics to my Cloudflare account by following AGENTS.md. Use the dashboard hostname analytics.example.com and make me (you@example.com) the admin. Track example.com (Europe/London). Add the cost brakes and Google Search data.
+3. **Do the few things only you can:**
+   - confirm your Workers Paid plan
+   - turn on Cloudflare Zero Trust once, if you never have
+   - sign in to the dashboard
+   - for Google data, sign in to Google and grant Search Console access to each site
+
+The agent tells you when each one is needed.
+
+### By hand
+
+Follow **[docs/DEPLOY.md](docs/DEPLOY.md)**. Allow about 20 minutes. In short:
 1. Create a D1 database and an R2 bucket.
 2. Copy `apps/worker/wrangler.example.jsonc` to `wrangler.jsonc` and set your hostname.
 3. Run `npm run deploy`.
 4. Put the dashboard behind Cloudflare Access.
-
-Allow about 20 minutes.
+5. Optionally, connect Google under **Admin → Google**, which walks you through it in the browser.
 
 Then add the snippet to your site:
 

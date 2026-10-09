@@ -44,6 +44,10 @@ export interface Env {
   DEFAULT_DAILY_CAP?: string;
   /** "1" = emergency stop: accept and discard every tracking event without touching storage. */
   INGEST_PAUSED?: string;
+  /** Google Search Console: a service account's JSON key (add its email as a Restricted user on each property). */
+  GOOGLE_SERVICE_ACCOUNT?: string;
+  /** Google API key for PageSpeed Insights and the Chrome UX Report (restrict it to those two APIs). */
+  GOOGLE_API_KEY?: string;
   /** Local demo only ("1"): enables /api/admin/demo/* to seed synthetic sites and traffic. Never set in production. */
   DEMO?: string;
 }
@@ -56,4 +60,6 @@ export interface Site {
   ip_blocklist: string[];
   /** Daily event cap: null = default, 0 = none. */
   daily_cap: number | null;
+  /** Search Console property: null = match automatically, "" = off. */
+  gsc_property: string | null;
 }

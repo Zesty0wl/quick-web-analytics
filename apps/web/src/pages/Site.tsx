@@ -7,6 +7,8 @@ import { ArrowLeft, Bell, BellOff, Close, External, Search } from "../components
 import { LineChart, type ChartMark } from "../components/LineChart";
 import { SiteSwitcher } from "../components/SiteSwitcher";
 import { WorldMap } from "../components/WorldMap";
+import { Section, Seg } from "../components/Section";
+import { SearchSection, SpeedSection } from "./Google";
 import { addDays, comparisonRange, daysBetween, grainsFor, isWeekend, shortDate, weekday, type Compare } from "../dates";
 import { compact, describeAnomaly, DIMENSION_LABELS, displayValue, duration, liveUrl, metricValue, METRIC_LABELS, whole } from "../format";
 import { globalParams, linkHandler, readSiteState, withParams, type Navigate, type SiteState } from "../url";
@@ -15,12 +17,14 @@ export const SECTIONS = [
   { id: "s-overview", label: "Overview" },
   { id: "s-realtime", label: "Realtime" },
   { id: "s-sources", label: "Sources" },
+  { id: "s-search", label: "Google Search" },
   { id: "s-pages", label: "Pages" },
   { id: "s-campaigns", label: "Campaigns" },
   { id: "s-events", label: "Events" },
   { id: "s-devices", label: "Devices" },
   { id: "s-geo", label: "Geography" },
   { id: "s-heatmap", label: "Heatmap" },
+  { id: "s-speed", label: "Speed" },
   { id: "s-days", label: "Day by day" },
 ];
 
@@ -37,7 +41,7 @@ const CHANNEL_COLORS: Record<string, string> = {
 };
 const AUTO_EVENTS = new Set(["Outbound Link: Click", "File Download", "Form: Submission", "404", "Cloaked Link: Click"]);
 
-interface Ctx {
+export interface Ctx {
   siteId: number;
   domain: string;
   from: string;
@@ -58,28 +62,6 @@ function useBreakdown(c: Ctx, dim: Dimension, metrics: Metric[], opts: { limit?:
   // Old rows against a new comparison (or vice versa) would give wrong changes, so hide them until both are current.
   const changesStale = cur.isPlaceholderData || prev.isPlaceholderData;
   return { rows, prevMap: changesStale ? new Map<string, number>() : prevMap, changesStale, loading: cur.isLoading, busy: busyOf(cur, prev), empty: rows.length === 0, error: cur.error as Error | null };
-}
-
-function Section({ id, title, sub, right, children }: { id: string; title: string; sub?: React.ReactNode; right?: React.ReactNode; children: (visible: boolean) => React.ReactNode }) {
-  const [ref, seen] = useInView<HTMLElement>();
-  return (
-    <section id={id} className="section" ref={ref}>
-      <div className="section-head">
-        <h3>{title}</h3>
-        {sub && <span className="muted" style={{ marginRight: right ? "auto" : undefined }}>{sub}</span>}
-        {right}
-      </div>
-      {seen ? children(true) : <div className="placeholder" />}
-    </section>
-  );
-}
-
-function Seg<T extends string>({ value, options, onChange }: { value: T; options: { id: T; label: string }[]; onChange: (v: T) => void }) {
-  return (
-    <div className="seg" role="group">
-      {options.map((o) => <button key={o.id} className={value === o.id ? "on" : ""} onClick={() => onChange(o.id)}>{o.label}</button>)}
-    </div>
-  );
 }
 
 function OpenLink({ dim, value, domain }: { dim: Dimension; value: string; domain: string }) {
@@ -204,11 +186,11 @@ export function Site({ me, url, navigate, dates, compare, periodText, cmpText }:
       </div>
     );
   }
-  return <Detail key={site.id} sites={me.sites} site={site} state={state} url={url} navigate={navigate} dates={dates} compare={compare} periodText={periodText} cmpText={cmpText} />;
+  return <Detail key={site.id} admin={me.user.role === "admin"} sites={me.sites} site={site} state={state} url={url} navigate={navigate} dates={dates} compare={compare} periodText={periodText} cmpText={cmpText} />;
 }
 
-function Detail({ sites, site, state, url, navigate, dates, compare, periodText, cmpText }: {
-  sites: Me["sites"]; site: Me["sites"][number]; state: SiteState; url: URL; navigate: Navigate; dates: { from: string; to: string }; compare: Compare; periodText: string; cmpText: string;
+function Detail({ admin, sites, site, state, url, navigate, dates, compare, periodText, cmpText }: {
+  admin: boolean; sites: Me["sites"]; site: Me["sites"][number]; state: SiteState; url: URL; navigate: Navigate; dates: { from: string; to: string }; compare: Compare; periodText: string; cmpText: string;
 }) {
   const { from, to } = dates;
   const { allowed, auto } = grainsFor(from, to);
@@ -359,12 +341,14 @@ function Detail({ sites, site, state, url, navigate, dates, compare, periodText,
       </section>
 
       <SourcesSection c={c} />
+      <SearchSection c={c} />
       <PagesSection c={c} />
       <CampaignsSection c={c} />
       <EventsSection c={c} />
       <DevicesSection c={c} />
       <GeoSection c={c} />
       <HeatmapSection c={c} />
+      <SpeedSection c={c} admin={admin} />
       {span > 1 && span <= 120 && <DaysSection c={c} onDay={(d) => zoomTo(d, d)} />}
     </div>
   );

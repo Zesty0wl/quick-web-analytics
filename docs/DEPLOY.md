@@ -2,6 +2,8 @@
 
 This guide takes you from a fresh clone to a working instance on your own Cloudflare account, in about 20 minutes.
 
+> **Using an AI agent?** Point it at [AGENTS.md](../AGENTS.md) instead. It's the same deployment as a runbook an agent can follow end to end, using the Cloudflare API for the parts this guide does in the dashboard.
+
 **You'll end up with:**
 - **One hostname** (for example `analytics.example.com`) that serves:
   - the dashboard, behind Cloudflare Access
@@ -152,6 +154,24 @@ To send email:
 2. In `apps/worker/wrangler.jsonc`, uncomment `"send_email": [{ "name": "EMAIL" }]` and set `"ALERT_FROM": "Quick Web Analytics <alerts@your-domain>"`.
 3. `npm run deploy`, then **Admin → Alerts → Send me a test email**.
 
+## Google data (optional)
+
+The site page can show two Google sections:
+
+- **Google Search:** clicks, impressions, click-through rate and average position from Search Console, with the queries, pages, countries and devices behind them. It's read live from Google (cached for a few hours) and follows the date range and a page filter. Click a query to see the pages Google showed for it.
+- **Speed:** a nightly PageSpeed Insights test of each site's home page on mobile and desktop (Lighthouse score, lab metrics and the biggest suggested fixes), the Core Web Vitals of real Chrome visitors that come with it, and a six-month trend from the Chrome UX Report.
+
+Both are free. To set them up, open **Admin → Google** in the dashboard and follow the four steps. Everything happens in your browser, with links to the right Google pages:
+
+1. **Turn on the APIs.** One link turns on the Search Console, PageSpeed Insights and Chrome UX Report APIs in a Google Cloud project (create one if you need to).
+2. **Connect Search Console.** Create a service account (a read-only robot Google account), download its JSON key, and upload it. It's checked with Google before it's saved.
+3. **Give it access to each site.** Search Console only shares a site with accounts its owner adds. Each site has an *Open in Search Console* link: choose **Add user**, paste the service account's address (there's a copy button), and pick **Restricted**. Sites are matched to their property automatically; pick another property or turn one off in the same table.
+4. **Connect PageSpeed.** Create an API key restricted to the PageSpeed Insights and Chrome UX Report APIs, and paste it in.
+
+Credentials saved this way are stored in the D1 database and only ever used by the Worker; the dashboard never shows them again. If you'd rather keep them as Worker secrets, set `GOOGLE_SERVICE_ACCOUNT` (the key file's contents: `npx wrangler secret put GOOGLE_SERVICE_ACCOUNT < key.json`) and `GOOGLE_API_KEY`. Secrets take precedence over saved credentials. An agent with the `gcloud` CLI can create everything except the per-site access; see [AGENTS.md](../AGENTS.md#phase-7-google-data-optional).
+
+Search Console data trails by a day or two and uses Pacific Time days, so its totals won't match QWA's visitor counts exactly. Chrome only reports real-visitor speed for sites with enough Chrome traffic; smaller sites show the lab test alone. If Google says service account key creation is blocked by an organisation policy, your Google Workspace has turned off downloadable keys: use a project under a personal Google account, or ask your Workspace admin.
+
 ## Moving to a new hostname
 
 1. Add the new hostname as a route (keep the old one) and set `APP_HOST` to the new one and `LEGACY_APP_HOSTS` to the old one.
@@ -178,6 +198,7 @@ These run automatically, from the cron triggers in `wrangler.jsonc`:
 | 00:05 | Rotate the daily salt used for cookieless visitor hashing. Salts older than two days are deleted. |
 | 03:30 | Merge last month's day files into one month file per table, compute daily totals for the overview, then run the nightly anomaly check. |
 | Every hour at :10 | The "so far today" anomaly check (emails straight away). |
+| 04:10 | PageSpeed tests of each active site's home page, if `GOOGLE_API_KEY` is set (on the hourly trigger). |
 
 To fill daily totals straight away (for example after importing history), send `POST /api/admin/rollup` with a JSON body from a signed-in admin session, e.g. from the browser console on the dashboard: `fetch("/api/admin/rollup", { method: "POST", headers: { "content-type": "application/json" }, body: "{}" })`.
 

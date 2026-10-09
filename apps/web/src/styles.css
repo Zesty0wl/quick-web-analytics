@@ -498,3 +498,46 @@ details[open] summary { margin-bottom: 8px; }
 @media (max-width: 900px) { .live-grid { grid-template-columns: minmax(0, 1fr); } }
 @media (max-width: 560px) { .kpi-strip { grid-template-columns: repeat(2, minmax(0, 1fr)); } }
 [data-look="cards"] .mb-tip { border-radius: 10px; }
+
+/* ---------- Google: Search Console and speed ---------- */
+/* Status colours for Core Web Vitals (Google's good / needs work / poor). Always shown with a text label. */
+:root { --status-good: #187a3f; --status-ni: #a86400; --status-poor: #c42b1c; }
+[data-theme="dark"] { --status-good: #4cc27a; --status-ni: #f0a433; --status-poor: #ff7a63; }
+.vital { display: inline-flex; align-items: center; gap: 6px; font-size: 12px; font-weight: 600; white-space: nowrap; }
+.vital i { width: 9px; height: 9px; display: inline-block; flex: none; }
+.vital-good i { background: var(--status-good); border-radius: 50%; }
+.vital-ni i { background: var(--status-ni); }
+.vital-poor i { width: 0; height: 0; border-left: 5px solid transparent; border-right: 5px solid transparent; border-bottom: 9px solid var(--status-poor); }
+.vrow { padding: 7px 0; border-top: 1px solid var(--color-divider); }
+.vrow:first-of-type { border-top: 0; }
+.vrow-h { display: flex; align-items: baseline; gap: var(--space-3); }
+.vrow .vname { font-size: 13px; margin-right: auto; min-width: 0; }
+.vrow .vval { font-weight: 700; font-variant-numeric: tabular-nums; }
+.vrow .vital { width: 92px; }
+.vrow.big { padding: 10px 0 12px; }
+.vrow.big .vname { font-size: 14px; font-weight: 600; }
+.vrow.big .vval { font-size: 18px; }
+.vscale { position: relative; display: grid; grid-template-columns: 1fr 1fr 1fr; gap: 2px; height: 6px; margin-top: 8px; }
+.vscale .b.good { background: color-mix(in srgb, var(--status-good) 55%, transparent); }
+.vscale .b.ni { background: color-mix(in srgb, var(--status-ni) 55%, transparent); }
+.vscale .b.poor { background: color-mix(in srgb, var(--status-poor) 55%, transparent); }
+.vscale .m { position: absolute; top: -4px; width: 3px; height: 14px; background: var(--color-text); transform: translateX(-50%); box-shadow: 0 0 0 2px var(--color-bg); }
+.vminor { margin-top: var(--space-2); border-top: 1px solid var(--color-divider); }
+.score-head { display: flex; align-items: center; gap: var(--space-4); margin: var(--space-3) 0 var(--space-3); flex-wrap: wrap; }
+.score-ring { position: relative; width: 64px; height: 64px; flex: none; }
+.score-ring .n { position: absolute; inset: 0; display: grid; place-items: center; font-size: 22px; font-weight: 800; }
+.score-spark { margin-left: auto; width: min(220px, 100%); display: flex; flex-direction: column; gap: 4px; font-size: 11px; }
+.speed-bar { display: flex; align-items: center; justify-content: space-between; gap: var(--space-3); flex-wrap: wrap; margin-bottom: var(--space-4); }
+.wins { list-style: none; margin: var(--space-2) 0 0; padding: 0; }
+.wins li { display: flex; justify-content: space-between; gap: var(--space-3); padding: 6px 0; border-top: 1px solid var(--color-divider); font-size: 13px; }
+.wins li span:last-child { white-space: nowrap; }
+/* Admin → Google: numbered setup steps, and secondary buttons inside the admin button rows */
+.steps { margin: 0; padding-left: 22px; display: grid; gap: 12px; }
+.steps li { padding-left: 4px; line-height: 1.5; }
+.steps .install { margin-top: 8px; }
+.install .row label.btn { background: var(--color-accent); color: var(--color-bg); padding: 7px 12px; }
+.install .row .btn.btn-secondary { all: unset; cursor: pointer; font-weight: 700; font-size: 14px; padding: 6px 12px; color: var(--color-text); border: 1px solid var(--rule); }
+.install .row .btn.btn-ghost { all: unset; cursor: pointer; font-weight: 700; font-size: 14px; padding: 7px 4px; color: var(--color-accent); }
+.install .row .btn.btn-secondary:hover { background: color-mix(in srgb, var(--color-text) 7%, transparent); }
+.install .row .btn:disabled { opacity: .45; cursor: not-allowed; }
+.panel-head .vital { margin-left: auto; }

@@ -3,6 +3,37 @@
 All notable changes to Quick Web Analytics. Dates are UTC. Database changes ship as D1 migrations in
 `apps/worker/migrations`; apply them before deploying (`npx wrangler d1 migrations apply qwa --remote`).
 
+## [Unreleased]
+
+### Added
+
+- **Google Search section** on each site's page, from Search Console:
+  - clicks, impressions, click-through rate and average position, with change against the comparison period and a daily chart
+  - top queries, pages, countries and devices; click a query to see which pages Google showed for it
+  - read live (cached at the edge for 3 hours, a day for settled ranges), following the date range and a page filter
+- **Speed section**, from PageSpeed Insights and the Chrome UX Report:
+  - nightly tests of each active site's home page on mobile and desktop
+  - Lighthouse score with its history, lab metrics and the biggest suggested fixes
+  - real Chrome visitors' Core Web Vitals (LCP, INP, CLS) against Google's thresholds, and a six-month weekly trend
+  - admins can test on demand
+- **Admin → Google:** guided setup in the browser:
+  - links to turn on the APIs and create the service account
+  - upload its key file and paste the API key, each checked with Google before it's saved
+  - grant access per site, with an *Open in Search Console* link for each and a live connected status
+  - choose a different Search Console property per site, or turn it off
+- Credentials can also be set as the Worker secrets `GOOGLE_SERVICE_ACCOUNT` and `GOOGLE_API_KEY`, which take precedence.
+- **AGENTS.md:** a deployment runbook for AI coding agents, now the recommended way to deploy. It covers:
+  - the Cloudflare API token's permissions
+  - every step with a check
+  - the points where the agent must ask the person
+  - Access setup through the API
+  - cost brakes, alert emails and Google data (including a `gcloud` route)
+- `CLAUDE.md` points Claude Code at `AGENTS.md`.
+
+### Upgrade notes
+
+- Apply migrations `0007_google` (adds `sites.gsc_property` and the `speed_runs` table) and `0008_settings` (credentials saved from the dashboard).
+
 ## [0.2.0] - 2026-10-09
 
 ### Added

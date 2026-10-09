@@ -11,6 +11,7 @@ interface SiteRow {
   allowed_hostnames: string;
   ip_blocklist: string;
   daily_cap: number | null;
+  gsc_property: string | null;
 }
 
 function toSite(r: SiteRow): Site {
@@ -19,7 +20,7 @@ function toSite(r: SiteRow): Site {
 
 async function load(env: Env) {
   if (cache && Date.now() - cache.at < TTL_MS) return cache;
-  const { results } = await env.DB.prepare("SELECT id, domain, timezone, allowed_hostnames, ip_blocklist, daily_cap FROM sites").all<SiteRow>();
+  const { results } = await env.DB.prepare("SELECT id, domain, timezone, allowed_hostnames, ip_blocklist, daily_cap, gsc_property FROM sites").all<SiteRow>();
   const sites = results.map(toSite);
   cache = { at: Date.now(), byDomain: new Map(sites.map((s) => [s.domain, s])), byId: new Map(sites.map((s) => [s.id, s])) };
   return cache;

@@ -19,3 +19,7 @@ apps/worker/.demo.wrangler.jsonc
 *.zip
 # Private working notes (not part of the public repo)
 internal/
+
+# Google credentials (Search Console service account key, API key) — never commit
+google-service-account.json
+google-api-key.txt

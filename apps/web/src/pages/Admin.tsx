@@ -22,11 +22,12 @@ interface UserRow {
 const lines = (s: string) => s.split(/[\s,]+/).map((x) => x.trim()).filter(Boolean);
 
 export function Admin({ me }: { me: Me }) {
-  const [tab, setTab] = useState<"users" | "sites" | "alerts">("users");
+  const [tab, setTab] = useState<"users" | "sites" | "alerts" | "google">("users");
   const heads = {
     users: ["Users & access", "Who can sign in, and which sites they can see"],
     sites: ["Sites", "Add sites, install the tracker and change settings"],
     alerts: ["Alerts", "Unusual days (spikes, drops and possible outages), and the emails about them"],
+    google: ["Google data", "Search Console and PageSpeed: what's connected, and which property each site uses"],
   } as const;
   return (
     <div className="admin">
@@ -41,8 +42,9 @@ export function Admin({ me }: { me: Me }) {
         <button className={tab === "users" ? "on" : ""} onClick={() => setTab("users")}>Users & access</button>
         <button className={tab === "sites" ? "on" : ""} onClick={() => setTab("sites")}>Sites</button>
         <button className={tab === "alerts" ? "on" : ""} onClick={() => setTab("alerts")}>Alerts</button>
+        <button className={tab === "google" ? "on" : ""} onClick={() => setTab("google")}>Google</button>
       </div>
-      {tab === "users" ? <Users me={me} /> : tab === "sites" ? <Sites /> : <Alerts me={me} />}
+      {tab === "users" ? <Users me={me} /> : tab === "sites" ? <Sites /> : tab === "alerts" ? <Alerts me={me} /> : <Google />}
     </div>
   );
 }
@@ -465,5 +467,199 @@ function SiteSettings({ site }: { site: SiteRow }) {
       {save.isSuccess && <span className="hint"> Saved</span>}
       {save.isError && <span className="error">{(save.error as Error).message}</span>}
     </div>
+  );
+}
+
+interface GoogleStatus {
+  account: string | null;
+  accountSource: "secret" | "dashboard" | null;
+  projectId: string | null;
+  apiKey: boolean;
+  apiKeySource: "secret" | "dashboard" | null;
+  properties: string[];
+  error: string | null;
+  sites: { id: number; domain: string; setting: string | null; property: string | null; lastSpeedTest: number | null }[];
+}
+
+const GCP = "https://console.cloud.google.com";
+const ENABLE_APIS = `${GCP}/flows/enableapi?apiid=searchconsole.googleapis.com,pagespeedonline.googleapis.com,chromeuxreport.googleapis.com`;
+const withProject = (url: string, project: string | null) => (project ? `${url}${url.includes("?") ? "&" : "?"}project=${encodeURIComponent(project)}` : url);
+
+function Done({ children }: { children: React.ReactNode }) {
+  return <span className="vital vital-good"><i aria-hidden />{children}</span>;
+}
+
+function CopyButton({ text, label = "Copy" }: { text: string; label?: string }) {
+  const [copied, setCopied] = useState(false);
+  return (
+    <button className="btn btn-secondary" onClick={() => navigator.clipboard.writeText(text).then(() => { setCopied(true); setTimeout(() => setCopied(false), 1500); })}>
+      {copied ? "Copied" : label}
+    </button>
+  );
+}
+
+/**
+ * Google setup, start to finish, in the browser: turn on the APIs, upload the service account key, grant it
+ * access to each Search Console property, and paste a PageSpeed API key. Each credential is checked before it's saved.
+ */
+function Google() {
+  const qc = useQueryClient();
+  const [fresh, setFresh] = useState(false);
+  const g = useQuery({ queryKey: ["admin-google"], queryFn: () => api<GoogleStatus>(`/admin/google${fresh ? "?fresh=1" : ""}`) });
+  const refresh = () => qc.invalidateQueries({ queryKey: ["admin-google"] });
+  const upload = useMutation({
+    mutationFn: async (file: File) => api<{ account: string; properties: number }>("/admin/google/service-account", { method: "PUT", body: JSON.stringify({ json: await file.text() }) }),
+    onSuccess: refresh,
+  });
+  const disconnect = useMutation({ mutationFn: () => api("/admin/google/service-account", { method: "DELETE", body: "{}" }), onSuccess: refresh });
+  const [key, setKey] = useState("");
+  const saveKey = useMutation({ mutationFn: () => api("/admin/google/api-key", { method: "PUT", body: JSON.stringify({ key }) }), onSuccess: () => { setKey(""); refresh(); } });
+  const removeKey = useMutation({ mutationFn: () => api("/admin/google/api-key", { method: "DELETE", body: "{}" }), onSuccess: refresh });
+  const save = useMutation({
+    mutationFn: ({ id, value }: { id: number; value: string | null }) => api(`/admin/sites/${id}`, { method: "PATCH", body: JSON.stringify({ gsc_property: value }) }),
+    onSuccess: refresh,
+  });
+  const recheck = async () => {
+    setFresh(true);
+    await qc.fetchQuery({ queryKey: ["admin-google"], queryFn: () => api<GoogleStatus>("/admin/google?fresh=1") });
+    setFresh(false);
+  };
+  const d = g.data;
+  if (g.isError) return <p className="error">{(g.error as Error).message}</p>;
+  if (!d) return <section className="cell"><p className="hint">Loading…</p></section>;
+  const connected = d.sites.filter((s) => s.property).length;
+
+  return (
+    <>
+      <section className="cell">
+        <p>
+          Google can add two sections to each site's page: <b>Google Search</b> (the searches that show your site, from Search Console) and
+          {" "}<b>Speed</b> (nightly PageSpeed tests and real visitors' Core Web Vitals). Both are free. Setup takes about ten minutes, all in your browser.
+        </p>
+      </section>
+
+      <section className="cell">
+        <header className="panel-head"><h3>1. Turn on Google's APIs</h3></header>
+        <p>Open the link, choose a Google Cloud project (or create one, named anything, such as “Quick Web Analytics”), then <b>Next → Enable</b>. It turns on Search Console, PageSpeed Insights and the Chrome UX Report.</p>
+        <div className="install"><div className="row">
+          <a className="btn btn-secondary" href={ENABLE_APIS} target="_blank" rel="noopener noreferrer">Turn on the APIs ↗</a>
+        </div></div>
+      </section>
+
+      <section className="cell">
+        <header className="panel-head"><h3>2. Connect Search Console</h3>{d.account && <Done>Connected</Done>}</header>
+        {d.account ? (
+          <>
+            <p>Signed in as a service account (a robot Google account that can only read): <code>{d.account}</code>{d.accountSource === "secret" && <> (set as a Worker secret)</>}.</p>
+            {d.error && <p className="error">{d.error}</p>}
+            {d.accountSource === "dashboard" && (
+              <div className="install"><div className="row">
+                <label className="btn btn-secondary">Replace the key file<input type="file" accept=".json,application/json" hidden onChange={(e) => e.target.files?.[0] && upload.mutate(e.target.files[0])} /></label>
+                <button className="btn btn-ghost" onClick={() => disconnect.mutate()} disabled={disconnect.isPending}>Disconnect</button>
+              </div></div>
+            )}
+          </>
+        ) : (
+          <ol className="steps">
+            <li><a href={withProject(`${GCP}/iam-admin/serviceaccounts/create`, d.projectId)} target="_blank" rel="noopener noreferrer">Create a service account ↗</a> in the same project. Name it anything (e.g. “qwa-reader”), click <b>Create and continue</b>, skip the roles, and click <b>Done</b>.</li>
+            <li>Open the new account, go to <b>Keys → Add key → Create new key</b>, keep <b>JSON</b> and click <b>Create</b>. A small file downloads.</li>
+            <li>
+              Upload that file here. It's checked with Google before it's saved.
+              <div className="install"><div className="row">
+                <label className="btn">{upload.isPending ? "Checking…" : "Upload the key file"}<input type="file" accept=".json,application/json" hidden disabled={upload.isPending} onChange={(e) => e.target.files?.[0] && upload.mutate(e.target.files[0])} /></label>
+              </div></div>
+              <p className="hint">If Google says key creation is blocked by an organisation policy, your Google Workspace has turned off downloadable keys. Use a project under a personal Google account instead, or ask your Workspace admin.</p>
+            </li>
+          </ol>
+        )}
+        {upload.isError && <p className="error">{(upload.error as Error).message}</p>}
+        {upload.isSuccess && <p className="hint">Connected. It can read {upload.data.properties} {upload.data.properties === 1 ? "property" : "properties"} so far.</p>}
+      </section>
+
+      <section className="cell">
+        <header className="panel-head"><h3>3. Give it access to each site</h3>{d.account && <span className="muted">{connected} of {d.sites.length} sites connected</span>}</header>
+        {d.account ? (
+          <>
+            <p>
+              Search Console only shares a site with accounts its owner adds. For each site marked <b>No access</b>: click <b>Open in Search Console</b>,
+              then <b>Add user</b>, paste the address, choose <b>Restricted</b> (read-only) and click <b>Add</b>.
+            </p>
+            <div className="install"><div className="row">
+              <code style={{ userSelect: "all" }}>{d.account}</code>
+              <CopyButton text={d.account} label="Copy address" />
+              <button className="btn btn-secondary" onClick={recheck} disabled={fresh}>{fresh ? "Checking…" : "Check again"}</button>
+            </div></div>
+            <table className="users" style={{ marginTop: 12 }}>
+              <thead><tr><th>Site</th><th>Search Console</th><th>Property</th><th>Last speed test</th></tr></thead>
+              <tbody>
+                {d.sites.map((s) => (
+                  <tr key={s.id}>
+                    <td>{s.domain}</td>
+                    <td>
+                      {s.property ? <Done>Connected</Done> : s.setting === "" ? <span className="muted">Off</span> : (
+                        <a href={`https://search.google.com/search-console/users?resource_id=${encodeURIComponent(`sc-domain:${s.domain}`)}`} target="_blank" rel="noopener noreferrer"
+                          title="Opens the site's Users and permissions page. If the site isn't in Search Console yet, add it there first.">
+                          No access · Open in Search Console ↗
+                        </a>
+                      )}
+                    </td>
+                    <td>
+                      <select
+                        value={s.setting === null ? "auto" : s.setting === "" ? "off" : s.setting}
+                        disabled={save.isPending}
+                        onChange={(e) => save.mutate({ id: s.id, value: e.target.value === "auto" ? null : e.target.value === "off" ? "" : e.target.value })}
+                        aria-label={`Search Console property for ${s.domain}`}
+                      >
+                        <option value="auto">{s.setting === null ? (s.property ? `Automatic: ${s.property.replace(/^sc-domain:/, "")}` : "Automatic") : "Automatic"}</option>
+                        {d.properties.map((p) => <option key={p} value={p}>{p}</option>)}
+                        <option value="off">Off</option>
+                      </select>
+                    </td>
+                    <td>{s.lastSpeedTest ? ago(s.lastSpeedTest) : <span className="muted">Never</span>}</td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+            <p className="hint">
+              Not in Search Console yet? <a href="https://search.google.com/search-console/welcome" target="_blank" rel="noopener noreferrer">Add the site there ↗</a> first (a Domain property, verified with a DNS record),
+              then grant access. Google can take a few minutes to share a newly added site.
+            </p>
+          </>
+        ) : (
+          <p className="hint">Connect Search Console first.</p>
+        )}
+        {save.isError && <p className="error">{(save.error as Error).message}</p>}
+      </section>
+
+      <section className="cell">
+        <header className="panel-head"><h3>4. Connect PageSpeed</h3>{d.apiKey && <Done>Connected</Done>}</header>
+        {d.apiKey ? (
+          <>
+            <p>
+              Every site with visitors in the last week gets its home page tested on mobile and desktop each night (about 04:10 UTC). Admins can also test a site
+              from its Speed section.{d.apiKeySource === "secret" && " The key is set as a Worker secret."}
+            </p>
+            {d.apiKeySource === "dashboard" && (
+              <div className="install"><div className="row"><button className="btn btn-ghost" onClick={() => removeKey.mutate()} disabled={removeKey.isPending}>Remove the key</button></div></div>
+            )}
+          </>
+        ) : (
+          <ol className="steps">
+            <li>
+              <a href={withProject(`${GCP}/apis/credentials`, d.projectId)} target="_blank" rel="noopener noreferrer">Open Credentials ↗</a> and choose <b>Create credentials → API key</b>.
+              Under <b>API restrictions</b>, pick <b>PageSpeed Insights API</b> and <b>Chrome UX Report API</b>, then <b>Create</b> and copy the key.
+            </li>
+            <li>
+              Paste it here. It's checked with Google before it's saved.
+              <div className="install"><div className="row">
+                <input value={key} onChange={(e) => setKey(e.target.value)} placeholder="AIza…" spellCheck={false} autoComplete="off" style={{ minWidth: 280 }} aria-label="Google API key" />
+                <button className="btn" onClick={() => saveKey.mutate()} disabled={!key.trim() || saveKey.isPending}>{saveKey.isPending ? "Checking…" : "Save"}</button>
+              </div></div>
+            </li>
+          </ol>
+        )}
+        {saveKey.isError && <p className="error">{(saveKey.error as Error).message}</p>}
+      </section>
+    </>
   );
 }
