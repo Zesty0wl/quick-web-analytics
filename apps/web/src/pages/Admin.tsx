@@ -107,6 +107,12 @@ function Alerts({ me }: { me: Me }) {
   const alerts = useAlerts();
   const test = useMutation({ mutationFn: () => api<{ to: string; about: string }>("/alerts/test", { method: "POST", body: "{}" }) });
   const check = useMutation({ mutationFn: () => api<{ results: { domain: string; anomalies: number; today: string | null }[] }>("/admin/anomalies", { method: "POST", body: "{}" }) });
+  const sched = useQuery({
+    queryKey: ["admin-scheduler"],
+    queryFn: () => api<{ configured: boolean; nextRun?: number | null; lastRun?: { at: number; ms: number; error?: string } | null }>("/admin/scheduler"),
+    refetchInterval: 60_000,
+  });
+  const hhmm = (ms: number) => new Date(ms).toLocaleTimeString("en-GB", { hour: "2-digit", minute: "2-digit" });
   return (
     <>
       <section className="cell">
@@ -140,6 +146,14 @@ function Alerts({ me }: { me: Me }) {
       <section className="cell">
         <header className="panel-head"><h3>Check now</h3></header>
         <p className="hint">Re-runs both checks for every site: whole days (normally nightly at about 03:30 UTC) and the day so far (normally every hour at 10 past). This doesn't send emails.</p>
+        {sched.data && (sched.data.configured ? (
+          <p className={sched.data.lastRun?.error ? "error" : "hint"}>
+            Hourly check: {sched.data.lastRun ? <>last ran at {hhmm(sched.data.lastRun.at)} ({ago(Math.floor(sched.data.lastRun.at / 1000))}){sched.data.lastRun.error ? `, but failed: ${sched.data.lastRun.error}` : ""}</> : "hasn't run yet"}
+            {sched.data.nextRun ? <>; next at {hhmm(sched.data.nextRun)}.</> : "."}
+          </p>
+        ) : (
+          <p className="error">The hourly check isn't set up: add the Scheduler Durable Object from wrangler.example.jsonc to wrangler.jsonc and deploy.</p>
+        ))}
         <div className="install"><div className="row">
           <button onClick={() => check.mutate()} disabled={check.isPending}>{check.isPending ? "Checking…" : "Check all sites"}</button>
           {check.isError && <span className="error">{(check.error as Error).message}</span>}
@@ -689,7 +703,7 @@ function Google() {
         {d.apiKey ? (
           <>
             <p>
-              Every site with visitors in the last week gets its home page tested on mobile and desktop each night (about 04:10 UTC). Admins can also test a site
+              Every site with visitors in the last week gets its home page tested on mobile and desktop each night (between 02:00 and 08:00 UTC). Admins can also test a site
               from its Speed section.{d.apiKeySource === "secret" && " The key is set as a Worker secret."}
             </p>
             {d.apiKeySource === "dashboard" && (

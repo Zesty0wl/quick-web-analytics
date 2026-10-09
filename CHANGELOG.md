@@ -31,8 +31,17 @@ All notable changes to Quick Web Analytics. Dates are UTC. Database changes ship
 - `CLAUDE.md` points Claude Code at `AGENTS.md`.
 - **Admin → Sites → Install: "Copy prompt for your agent".** A prompt for the site's coding agent that adds or updates the snippet in the right place for the framework (Next.js, Astro, WordPress, static generators…). It also handles a Content-Security-Policy, replaces an old Plausible tag when the site is migrating, offers custom events, and verifies events arrive.
 
+### Changed
+
+- **The hourly jobs run on a Durable Object alarm instead of a cron trigger.** These are the "so far today" anomaly check and the overnight PageSpeed tests.
+  - The hourly cron added in 0.2.0 never fired on our production account, while the nightly crons on the same Worker ran normally.
+  - The new `Scheduler` Durable Object books its next run each time it runs, and the Worker re-arms it if it ever stops.
+  - Admin → Alerts shows when the hourly check last ran.
+- PageSpeed tests are spread over 02:10–07:10 UTC, six sites per hour, so no single run is long. A failed test is retried once, and one strategy failing no longer loses the other.
+
 ### Upgrade notes
 
+- **Add the Scheduler to `apps/worker/wrangler.jsonc`** (see `wrangler.example.jsonc`). Add `{ "name": "SCHEDULER", "class_name": "Scheduler" }` to `durable_objects.bindings`, add `{ "tag": "v2", "new_sqlite_classes": ["Scheduler"] }` to `migrations`, and remove `"10 * * * *"` from `triggers.crons`.
 - Apply migrations `0007_google` (adds `sites.gsc_property` and the `speed_runs` table) and `0008_settings` (credentials saved from the dashboard).
 
 ## [0.2.0] - 2026-10-09

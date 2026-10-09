@@ -18,15 +18,15 @@
   // CHANGE: the id printed by `npx wrangler d1 create qwa`.
   "d1_databases": [{ "binding": "DB", "database_name": "qwa", "database_id": "00000000-0000-0000-0000-000000000000", "migrations_dir": "migrations" }],
   "r2_buckets": [{ "binding": "DATA", "bucket_name": "qwa-data" }],
-  "durable_objects": { "bindings": [{ "name": "SITE", "class_name": "SiteDO" }] },
-  "migrations": [{ "tag": "v1", "new_sqlite_classes": ["SiteDO"] }],
+  "durable_objects": { "bindings": [{ "name": "SITE", "class_name": "SiteDO" }, { "name": "SCHEDULER", "class_name": "Scheduler" }] },
+  "migrations": [{ "tag": "v1", "new_sqlite_classes": ["SiteDO"] }, { "tag": "v2", "new_sqlite_classes": ["Scheduler"] }],
   // Optional: anomaly alert emails through Cloudflare Email Sending (also set ALERT_FROM below). See docs/DEPLOY.md.
   // "send_email": [{ "name": "EMAIL" }],
   "services": [{ "binding": "QUERY", "service": "qwa-query", "entrypoint": "QueryService" }],
   // CHANGE: the hostname for the dashboard, tracker and API. It must be on a zone in your Cloudflare account.
   "routes": [{ "pattern": "analytics.example.com", "custom_domain": true }],
   "workers_dev": false,
-  "triggers": { "crons": ["5 0 * * *", "30 3 * * *", "10 * * * *"] },
+  "triggers": { "crons": ["5 0 * * *", "30 3 * * *"] },
   "vars": {
     // Plausible-compatible ingestion (optional, for migrating existing Plausible snippets):
     // extra hostnames that only serve /js/* and /api/event, comma-separated. Leave empty if you don't need it.

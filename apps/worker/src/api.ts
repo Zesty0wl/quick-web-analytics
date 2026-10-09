@@ -463,6 +463,14 @@ admin.delete("/google/api-key", async (c) => {
   return c.json({ ok: true });
 });
 
+/** When the hourly jobs (anomaly check, overnight speed tests) last ran and will next run. */
+admin.get("/scheduler", async (c) => {
+  if (!c.env.SCHEDULER) return c.json({ configured: false });
+  const stub = c.env.SCHEDULER.get(c.env.SCHEDULER.idFromName("global"));
+  await stub.ensure();
+  return c.json({ configured: true, ...(await stub.status()) });
+});
+
 admin.get("/sites/status", async (c) => {
   const sites = await allSites(c.env);
   const statuses = await Promise.all(

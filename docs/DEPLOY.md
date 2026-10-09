@@ -191,14 +191,14 @@ Migrations are additive and safe to re-run; already-applied ones are skipped.
 
 ## Scheduled jobs
 
-These run automatically, from the cron triggers in `wrangler.jsonc`:
+These run automatically. The nightly ones come from the cron triggers in `wrangler.jsonc`; the hourly ones run on the `Scheduler` Durable Object's alarm, which re-arms itself each run (the Worker re-arms it if it ever stops). Admin → Alerts shows when the hourly check last ran.
 
 | When (UTC) | Job |
 |---|---|
 | 00:05 | Rotate the daily salt used for cookieless visitor hashing. Salts older than two days are deleted. |
 | 03:30 | Merge last month's day files into one month file per table, compute daily totals for the overview, then run the nightly anomaly check. |
-| Every hour at :10 | The "so far today" anomaly check (emails straight away). |
-| 04:10 | PageSpeed tests of each active site's home page, if `GOOGLE_API_KEY` is set (on the hourly trigger). |
+| Every hour at :10 | The "so far today" anomaly check (emails straight away). Scheduler alarm. |
+| 02:10–07:10 | PageSpeed tests of each active site's home page, a few sites per hour, if Google PageSpeed is connected. Scheduler alarm. |
 
 To fill daily totals straight away (for example after importing history), send `POST /api/admin/rollup` with a JSON body from a signed-in admin session, e.g. from the browser console on the dashboard: `fetch("/api/admin/rollup", { method: "POST", headers: { "content-type": "application/json" }, body: "{}" })`.
 

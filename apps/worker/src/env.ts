@@ -1,4 +1,5 @@
 import type { SiteDO } from "./do/site";
+import type { Scheduler } from "./do/scheduler";
 import type { QueryService } from "../../query/src/index";
 
 export interface Env {
@@ -6,6 +7,8 @@ export interface Env {
   DATA: R2Bucket;
   ASSETS: Fetcher;
   SITE: DurableObjectNamespace<SiteDO>;
+  /** Runs the hourly jobs on an alarm (optional only so older configs keep deploying; add it from wrangler.example.jsonc). */
+  SCHEDULER?: DurableObjectNamespace<Scheduler>;
   QUERY: Service<QueryService>;
 
   /** Hostnames that only serve Plausible-compatible ingestion (scripts + /api/event). */

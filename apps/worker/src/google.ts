@@ -409,16 +409,25 @@ export async function testSite(env: Env, site: Site): Promise<{ results: SpeedRe
 }
 
 /**
- * Nightly: test every site that had visitors in the last week, a few at a time (each test takes up to ~40s),
- * and drop runs older than 13 months.
+ * Overnight PageSpeed tests: sites that had visitors in the last week and haven't been tested in the last 20 hours,
+ * least recently tested first, at most `limit` per run (the scheduler spreads them over several hours, since each
+ * test takes up to a minute or two). Runs older than 13 months are dropped.
  */
-export async function speedJob(env: Env, sites: Site[]) {
+export async function speedJob(env: Env, sites: Site[], opts: { limit?: number } = {}) {
   if (!(await apiKey(env))) return;
   const since = new Date(Date.now() - 7 * 86_400_000).toISOString().slice(0, 10);
   const { results } = await env.DB.prepare("SELECT DISTINCT site_id FROM daily_stats WHERE day >= ? AND visitors > 0").bind(since).all<{ site_id: number }>();
   const active = new Set(results.map((r) => r.site_id));
-  const queue = sites.filter((s) => active.has(s.id));
+  const { results: last } = await env.DB.prepare("SELECT site_id, MAX(run_at) run_at FROM speed_runs GROUP BY site_id").all<{ site_id: number; run_at: number }>();
+  const lastRun = new Map(last.map((r) => [r.site_id, r.run_at]));
+  const due = Math.floor(Date.now() / 1000) - 20 * 3600;
+  const queue = sites
+    .filter((s) => active.has(s.id) && (lastRun.get(s.id) ?? 0) < due)
+    .sort((a, b) => (lastRun.get(a.id) ?? 0) - (lastRun.get(b.id) ?? 0))
+    .slice(0, opts.limit ?? Infinity);
+  if (!queue.length) return;
   let failed = 0;
+  const tested = queue.length;
   const worker = async () => {
     for (let s = queue.shift(); s; s = queue.shift()) {
       try {
@@ -432,5 +441,5 @@ export async function speedJob(env: Env, sites: Site[]) {
   };
   await Promise.all([worker(), worker(), worker()]);
   await env.DB.prepare("DELETE FROM speed_runs WHERE run_at < ?").bind(Math.floor(Date.now() / 1000) - 400 * 86_400).run();
-  console.log("speed tests done", JSON.stringify({ sites: active.size, failed }));
+  console.log("speed tests done", JSON.stringify({ tested, failed }));
 }

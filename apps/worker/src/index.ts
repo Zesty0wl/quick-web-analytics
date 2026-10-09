@@ -5,13 +5,28 @@ import type { Env } from "./env";
 import { corsPreflight, handlePlausibleEvent, handleQwaEvent } from "./ingest/handler";
 import { rotateSalts } from "./ingest/visitor";
 import { allSites } from "./sites";
-import { anomalyJob, intradayJob } from "./alerts";
+import { anomalyJob } from "./alerts";
 import { rollupSite } from "./rollup";
-import { speedJob } from "./google";
 
 export { SiteDO } from "./do/site";
+export { Scheduler } from "./do/scheduler";
 
 const app = new Hono<{ Bindings: Env }>();
+
+// The hourly jobs run on the Scheduler's alarm, which re-arms itself. Make sure it's armed, once per isolate.
+let schedulerChecked = false;
+const ensureScheduler = (env: Env, ctx: { waitUntil(p: Promise<unknown>): void }) => {
+  if (schedulerChecked || !env.SCHEDULER) return;
+  schedulerChecked = true;
+  ctx.waitUntil(env.SCHEDULER.get(env.SCHEDULER.idFromName("global")).ensure().catch((e) => {
+    schedulerChecked = false;
+    console.error("scheduler ensure failed", e);
+  }));
+};
+app.use("*", async (c, next) => {
+  ensureScheduler(c.env, c.executionCtx);
+  await next();
+});
 
 const isIngestHost = (env: Env, host: string) =>
   env.INGEST_HOSTS.split(",").map((h) => h.trim().toLowerCase()).includes(host.toLowerCase());
@@ -100,9 +115,7 @@ export default {
   fetch: app.fetch,
   async scheduled(event, env, ctx) {
     if (event.cron === "5 0 * * *") ctx.waitUntil(rotateSalts(env.DB, Date.now()));
-    if (event.cron === "10 * * * *") ctx.waitUntil(allSites(env).then((sites) => intradayJob(env, sites)));
-    // PageSpeed tests once a day, on the hourly trigger (after the nightly jobs, before most visitors are up).
-    if (event.cron === "10 * * * *" && new Date(event.scheduledTime).getUTCHours() === 4) ctx.waitUntil(allSites(env).then((sites) => speedJob(env, sites)));
+    ensureScheduler(env, ctx); // the hourly jobs (see do/scheduler.ts)
     if (event.cron === "30 3 * * *") ctx.waitUntil(compactAll(env).then(() => rollupAll(env)).then(async () => anomalyJob(env, await allSites(env))));
   },
 } satisfies ExportedHandler<Env>;

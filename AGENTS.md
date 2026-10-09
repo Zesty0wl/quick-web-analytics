@@ -245,7 +245,7 @@ to store.
 
 **Check:** Admin → Google shows each site as *Connected*. A newly granted site can take a few minutes to appear; use *Check
 again*.
-- The first PageSpeed tests run at about 04:10 UTC, or an admin can press **Test now** in a site's Speed section.
+- The first PageSpeed tests run overnight (between 02:00 and 08:00 UTC), or an admin can press **Test now** in a site's Speed section.
 - Search Console data trails by a day or two.
 
 ### Finish
