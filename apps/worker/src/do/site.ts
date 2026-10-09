@@ -21,6 +21,8 @@ export class SiteDO extends DurableObject<Env> {
   private sql: SqlStorage;
   // Kept in memory and written once per flush, so each event costs as few SQLite row writes as possible.
   private dirtyVersion = new Map<string, number>(); // UTC day → events since the last flush
+  /** Last event time per front door ("qwa" | "plausible"), kept in memory and loaded once per wake. */
+  private lastSeen: Map<string, number> | null = null;
   private persistedDirty = new Set<string>(); // days with a dirty:<day> marker in storage (survives eviction)
   private today: { day: string; n: number } | null = null; // events counted so far today (UTC), for the cap
   private siteKnown = false;
@@ -197,6 +199,7 @@ export class SiteDO extends DurableObject<Env> {
     this.markDirty(eventDay);
     if (startDay !== eventDay) this.markDirty(startDay);
     if (this.today?.day === eventDay) this.today.n++;
+    if (this.lastSeen && ev.via && ev.ts > (this.lastSeen.get(ev.via) ?? 0)) this.lastSeen.set(ev.via, ev.ts);
 
     if ((await this.ctx.storage.getAlarm()) === null) {
       await this.ctx.storage.setAlarm(Date.now() + FLUSH_INTERVAL_MS);
@@ -401,14 +404,38 @@ export class SiteDO extends DurableObject<Env> {
     return { visitors: v.visitors, visits: v.visits, bounces: v.bounces ?? 0, duration_sum: v.duration_sum ?? 0, pageviews: e.pageviews ?? 0, events: e.events ?? 0 };
   }
 
-  /** Last event time and 14-day event counts by front door, for the admin status badges. */
-  async status(): Promise<{ lastEventAt: number | null; plausible14d: number; qwa14d: number; cappedAt: number | null; eventsToday: number }> {
+  /**
+   * When each front door last sent an event: exact from the local events (the last three days), else the end of the
+   * last day with any in the daily counts (60 days).
+   */
+  private lastSeenByVia(): Map<string, number> {
+    if (this.lastSeen) return this.lastSeen;
+    const seen = new Map<string, number>();
+    for (const r of this.sql.exec<{ via: string; ts: number }>("SELECT via, MAX(ts) ts FROM events WHERE via IS NOT NULL GROUP BY via").toArray()) seen.set(r.via, r.ts);
+    for (const r of this.sql.exec<{ via: string; day: string }>("SELECT via, MAX(day) day FROM daily_counts WHERE n > 0 GROUP BY via").toArray()) {
+      if (!seen.has(r.via)) seen.set(r.via, Math.floor(Date.parse(`${r.day}T23:59:59Z`) / 1000));
+    }
+    this.lastSeen = seen;
+    return seen;
+  }
+
+  /** Last event time, 14-day event counts and last-seen times by front door, for the tracker badges. */
+  async status(): Promise<{ lastEventAt: number | null; plausible14d: number; qwa14d: number; plausibleLastAt: number | null; qwaLastAt: number | null; cappedAt: number | null; eventsToday: number }> {
     const last = this.sql.exec<{ ts: number | null }>("SELECT MAX(ts) ts FROM events").one().ts;
     const counts = await this.ingestCounts(14);
     const sum = (via: string) => counts.filter((c) => c.via === via).reduce((n, c) => n + c.n, 0);
     const today = utcDay(Date.now());
     const capped = this.meta(`capped:${today}`);
-    return { lastEventAt: last ?? null, plausible14d: sum("plausible"), qwa14d: sum("qwa"), cappedAt: capped ? Number(capped) : null, eventsToday: this.todayCount(today) };
+    const seen = this.lastSeenByVia();
+    return {
+      lastEventAt: last ?? null,
+      plausible14d: sum("plausible"),
+      qwa14d: sum("qwa"),
+      plausibleLastAt: seen.get("plausible") ?? null,
+      qwaLastAt: seen.get("qwa") ?? null,
+      cappedAt: capped ? Number(capped) : null,
+      eventsToday: this.todayCount(today),
+    };
   }
 
   /** Everything the all-sites overview needs from this site, in one call. */
@@ -421,6 +448,8 @@ export class SiteDO extends DurableObject<Env> {
       lastEventAt: status.lastEventAt,
       plausible14d: status.plausible14d,
       qwa14d: status.qwa14d,
+      plausibleLastAt: status.plausibleLastAt,
+      qwaLastAt: status.qwaLastAt,
       cappedAt: status.cappedAt,
       now: this.sql.exec<{ n: number }>("SELECT COUNT(DISTINCT visitor) n FROM events WHERE ts >= ? AND kind != 'engagement'", now - 300).one().n,
       perMinute: this.perMinute(now),

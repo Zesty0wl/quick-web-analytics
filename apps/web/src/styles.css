@@ -545,3 +545,9 @@ details[open] summary { margin-bottom: 8px; }
 .agent-box { display: grid; gap: 10px; padding: 12px 14px; border-left: 4px solid var(--color-accent); background: var(--color-surface); }
 .agent-box p { margin: 4px 0 0; }
 .agent-prompt { max-height: 360px; overflow: auto; white-space: pre-wrap; font-size: 12px; }
+/* Line the top bar and section bar's contents up with the page column (main: max-width 1480px, 32px padding),
+   while their background and divider still run edge to edge. Phones keep their 16px gutters. */
+@media (min-width: 701px) {
+  .nav, .secnav { padding-left: max(var(--space-8), calc((100% - 1480px) / 2 + var(--space-8))); padding-right: max(var(--space-8), calc((100% - 1480px) / 2 + var(--space-8))); }
+}
+.accent-pick { display: flex; align-items: center; gap: var(--space-3); padding-bottom: 6px; }

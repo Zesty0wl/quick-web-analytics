@@ -1,6 +1,8 @@
 import { useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { api, useAlerts, type Me } from "../api";
+import { PALETTES, type Palette } from "../theme";
+import { trackerState } from "../format";
 
 interface SiteRow {
   id: number;
@@ -21,7 +23,7 @@ interface UserRow {
 
 const lines = (s: string) => s.split(/[\s,]+/).map((x) => x.trim()).filter(Boolean);
 
-export function Admin({ me }: { me: Me }) {
+export function Admin({ me, palette, onPalette }: { me: Me; palette: Palette; onPalette: (p: Palette) => void }) {
   const [tab, setTab] = useState<"users" | "sites" | "alerts" | "google">("users");
   const heads = {
     users: ["Users & access", "Who can sign in, and which sites they can see"],
@@ -36,6 +38,22 @@ export function Admin({ me }: { me: Me }) {
           <div className="kicker">Administration</div>
           <h1 style={{ margin: 0 }}>{heads[tab][0]}</h1>
           <div className="sub">{heads[tab][1]}</div>
+        </div>
+        <div className="accent-pick">
+          <span className="kpi-label">Accent colour</span>
+          <div className="swatches" role="group" aria-label="Accent colour">
+            {PALETTES.map((x) => (
+              <button
+                key={x.id}
+                className="swatch"
+                onClick={() => onPalette(x.id)}
+                title={x.label}
+                aria-label={`${x.label} accent`}
+                aria-pressed={palette === x.id}
+                style={{ background: x.color, boxShadow: `0 0 0 2px var(--color-bg), 0 0 0 ${palette === x.id ? "4px" : "2px"} var(--color-text)` }}
+              />
+            ))}
+          </div>
         </div>
       </header>
       <div className="seg" style={{ marginBottom: "var(--space-6)" }}>
@@ -258,6 +276,8 @@ interface SiteStatus {
   lastEventAt: number | null;
   plausible14d: number;
   qwa14d: number;
+  plausibleLastAt: number | null;
+  qwaLastAt: number | null;
 }
 
 function ago(ts: number): string {
@@ -271,13 +291,15 @@ function ago(ts: number): string {
 function Badge({ status }: { status: SiteStatus | null | undefined }) {
   if (status === undefined) return null;
   const live = status?.lastEventAt && Date.now() / 1000 - status.lastEventAt < 1800;
-  const via = !status ? "" : status.qwa14d && status.plausible14d ? "QWA + Plausible script" : status.qwa14d ? "QWA tracker" : status.plausible14d ? "Plausible script" : "";
+  const t = status ? trackerState(status) : null;
+  const via = t && t.label !== "No recent events" ? t.label : "";
   return (
     <span className="badges">
       <span className={live ? "badge ok" : status?.lastEventAt ? "badge" : "badge warn"}>
         {live ? "● live" : status?.lastEventAt ? `last event ${ago(status.lastEventAt)}` : "no data yet"}
       </span>
-      {via && <span className="badge">{via}</span>}
+      {via && <span className="badge" title={t?.plausibleNote ?? undefined}>{via}</span>}
+      {t?.plausibleNote && t.label !== "Plausible script" && <span className="badge">{t.plausibleNote}</span>}
     </span>
   );
 }
@@ -464,8 +486,8 @@ function Install({ site, status }: { site: SiteRow; status: SiteStatus | null | 
       {status && status.plausible14d > 0 && (
         <div className="callout">
           <b>Migrating from Plausible:</b> this site sent {status.plausible14d.toLocaleString()} events through the Plausible script in the last 14 days
-          {status.qwa14d ? ` and ${status.qwa14d.toLocaleString()} through the QWA tracker` : ""}. Replace the old Plausible <code>&lt;script&gt;</code> tag with
-          the snippet above. Existing <code>plausible(…)</code> calls and <code>plausible-event-*</code> classes keep working, and event names stay the same, so reports continue seamlessly.
+          {status.qwa14d ? ` and ${status.qwa14d.toLocaleString()} through the QWA tracker` : ""}{status.plausibleLastAt ? `; the last Plausible one arrived ${ago(status.plausibleLastAt)}` : ""}. Replace the old Plausible <code>&lt;script&gt;</code> tag with
+          the snippet above. Cached copies of old pages can keep sending a few for a day or so; the badge switches to "QWA tracker" once none have arrived for 48 hours. Existing <code>plausible(…)</code> calls and <code>plausible-event-*</code> classes keep working, and event names stay the same, so reports continue seamlessly.
         </div>
       )}
 

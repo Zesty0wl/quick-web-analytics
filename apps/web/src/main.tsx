@@ -57,9 +57,7 @@ function App() {
         onRange={(r) => navigate(withParams(url, r.range === "custom" ? { range: null, from: r.from, to: r.to, g: null } : { range: r.range === "30d" ? null : r.range, from: null, to: null, g: null }), { replace: true, keepScroll: true })}
         onCompare={(c) => navigate(withParams(url, { cmp: c === "prev" ? null : c }), { replace: true, keepScroll: true })}
         theme={appearance.theme}
-        palette={appearance.palette}
         onTheme={appearance.setTheme}
-        onPalette={appearance.setPalette}
         look={appearance.look}
         onLook={appearance.setLook}
         page={page}
@@ -71,7 +69,7 @@ function App() {
       />
       <main>
         {page === "admin" ? (
-          <Admin me={data} />
+          <Admin me={data} palette={appearance.palette} onPalette={appearance.setPalette} />
         ) : page === "site" ? (
           <Site me={data} url={url} navigate={navigate} dates={{ from, to }} compare={g.compare} periodText={periodText} cmpText={cmpText} />
         ) : (

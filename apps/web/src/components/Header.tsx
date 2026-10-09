@@ -1,7 +1,7 @@
 import { useEffect, useRef, useState } from "react";
 import { useIsFetching } from "@tanstack/react-query";
 import { PRESETS, todayIn, type Compare, type Range } from "../dates";
-import { PALETTES, type Look, type Palette, type Theme } from "../theme";
+import type { Look, Theme } from "../theme";
 import { useBusyFor } from "./Bits";
 import { Calendar, Cards, Grid, Moon, Sun } from "./Icons";
 
@@ -21,9 +21,7 @@ interface Props {
   onRange: (r: { range: Exclude<Range, "custom"> } | { range: "custom"; from: string; to: string }) => void;
   onCompare: (c: Compare) => void;
   theme: Theme;
-  palette: Palette;
   onTheme: (t: Theme) => void;
-  onPalette: (p: Palette) => void;
   look: Look;
   onLook: (l: Look) => void;
   page: "overview" | "site" | "admin";
@@ -106,19 +104,6 @@ export function Header(p: Props) {
               </div>
             </>
           )}
-          <div className="swatches" role="group" aria-label="Colour theme">
-            {PALETTES.map((x) => (
-              <button
-                key={x.id}
-                className="swatch"
-                onClick={() => p.onPalette(x.id)}
-                title={x.label}
-                aria-label={`${x.label} theme`}
-                aria-pressed={p.palette === x.id}
-                style={{ background: x.color, boxShadow: `0 0 0 2px var(--color-bg), 0 0 0 ${p.palette === x.id ? "4px" : "2px"} var(--color-text)` }}
-              />
-            ))}
-          </div>
           <button className="btn btn-secondary btn-icon" onClick={() => p.onTheme(p.theme === "dark" ? "light" : "dark")} title="Toggle light/dark" aria-label="Toggle light/dark">
             {p.theme === "dark" ? <Sun /> : <Moon />}
           </button>

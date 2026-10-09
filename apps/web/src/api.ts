@@ -89,6 +89,9 @@ export interface OverviewSite {
   /** Unix seconds when the site hit its daily event cap today (recording paused), if it did. */
   cappedAt: number | null;
   plausible14d?: number;
+  /** Unix seconds of the last event through each front door (admins only). */
+  plausibleLastAt?: number | null;
+  qwaLastAt?: number | null;
   qwa14d?: number;
 }
 

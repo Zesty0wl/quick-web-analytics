@@ -4,7 +4,7 @@ import { useOverview, type DayStats, type Me, type OverviewSite } from "../api";
 import { Busy, busyOf, Delta, deltaInfo, MinuteBars, Spark, Spinner, UpdatedAgo } from "../components/Bits";
 import { Alarm, External, Search } from "../components/Icons";
 import { addDays, todayIn } from "../dates";
-import { ANOMALY_LABEL, change, compact, describeAnomaly, duration, whole } from "../format";
+import { ANOMALY_LABEL, change, compact, describeAnomaly, duration, whole, trackerState } from "../format";
 import { globalParams, withParams, type Navigate } from "../url";
 
 type Sort = "visitors" | "growth" | "decline" | "live" | "name";
@@ -300,8 +300,8 @@ function MinuteTip({ i, rows, total }: { i: number; rows: Row[]; total: number }
 }
 
 function TrackerTag({ site }: { site: OverviewSite }) {
-  const label = site.qwa14d && site.plausible14d ? "QWA + Plausible" : site.qwa14d ? "QWA tracker" : site.plausible14d ? "Plausible script" : "No recent events";
-  return <span className={site.qwa14d && !site.plausible14d ? "tag tag-accent" : "tag tag-neutral"}>{label}</span>;
+  const t = trackerState(site);
+  return <span className={t.qwaOnly ? "tag tag-accent" : "tag tag-neutral"} title={t.plausibleNote ?? undefined}>{t.label}</span>;
 }
 
 function SiteSpark({ r, height = 52, width }: { r: Row; height?: number; width?: number }) {

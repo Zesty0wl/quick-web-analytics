@@ -82,7 +82,7 @@ api.get("/overview", async (c) => {
         live = await c.env.SITE.get(c.env.SITE.idFromName(String(site.id))).overview(bounds);
       } catch (e) {
         console.error("overview DO failed", site.domain, e);
-        live = { firstEventAt: null, lastEventAt: null, plausible14d: 0, qwa14d: 0, cappedAt: null, now: 0, perMinute: [] as number[], days: [] };
+        live = { firstEventAt: null, lastEventAt: null, plausible14d: 0, qwa14d: 0, plausibleLastAt: null, qwaLastAt: null, cappedAt: null, now: 0, perMinute: [] as number[], days: [] };
       }
       for (const d of live.days) {
         let stats: DayStats = d;
@@ -115,7 +115,7 @@ api.get("/overview", async (c) => {
         lastEventAt: live.lastEventAt, lastActiveDay, now: live.now, perMinute: live.perMinute, cappedAt: live.cappedAt ?? null,
         current: series(from, to), comparison: series(cfrom, cto),
         anomalies: anomalies.filter((a) => a.site_id === site.id && a.day >= from).map(({ day, kind, value, expected, metric, detail }) => ({ day, kind, value, expected, metric, detail: detail ? JSON.parse(detail) : null })),
-        ...(user.role === "admin" ? { plausible14d: live.plausible14d, qwa14d: live.qwa14d } : {}),
+        ...(user.role === "admin" ? { plausible14d: live.plausible14d, qwa14d: live.qwa14d, plausibleLastAt: live.plausibleLastAt, qwaLastAt: live.qwaLastAt } : {}),
       };
     }),
   );

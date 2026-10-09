@@ -100,6 +100,27 @@ export function liveUrl(dim: Dimension, value: string, siteDomain: string): stri
   return null;
 }
 
+/**
+ * Which tracker a site is using, from when each front door last sent an event. Both count as current for 48 hours,
+ * so the badge reads "QWA tracker" two days after the last old-Plausible-script event, not a fortnight.
+ */
+export function trackerState(s: { qwa14d?: number; plausible14d?: number; qwaLastAt?: number | null; plausibleLastAt?: number | null }): {
+  label: string; qwaOnly: boolean; plausibleNote: string | null;
+} {
+  const now = Date.now() / 1000;
+  const RECENT = 48 * 3600;
+  const q = s.qwaLastAt ?? null, p = s.plausibleLastAt ?? null;
+  const qRecent = q !== null && now - q < RECENT, pRecent = p !== null && now - p < RECENT;
+  // Plausible seen in the last fortnight: worth a "last seen" note while a migration settles.
+  const plausibleNote = p !== null && now - p < 14 * 86_400 ? `Plausible script last seen ${ago(p)}` : null;
+  if (qRecent && pRecent) return { label: "QWA + Plausible", qwaOnly: false, plausibleNote };
+  if (qRecent) return { label: "QWA tracker", qwaOnly: true, plausibleNote };
+  if (pRecent) return { label: "Plausible script", qwaOnly: false, plausibleNote };
+  // Quiet for two days: name whichever sent the last event.
+  if (q !== null || p !== null) return (q ?? 0) >= (p ?? 0) ? { label: "QWA tracker", qwaOnly: true, plausibleNote } : { label: "Plausible script", qwaOnly: false, plausibleNote };
+  return { label: "No recent events", qwaOnly: false, plausibleNote: null };
+}
+
 export function ago(ts: number | null | undefined): string {
   if (!ts) return "never";
   const s = Math.max(0, Math.round(Date.now() / 1000 - ts));

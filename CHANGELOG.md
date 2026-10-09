@@ -40,6 +40,9 @@ All notable changes to Quick Web Analytics. Dates are UTC. Database changes ship
 - **The hourly check also catches bursts:** 4× the usual for the last three hours, at least 200 extra visits, and the same strength threshold.
   - Until now it only compared the day so far, which dilutes a sharp rise. On issinfo.net, a pass of the ISS sent Melbourne's searchers to the site and produced 10.7× the usual visits in three hours. The day as a whole was only 2.9×.
   - Tested against 30 days of all 22 sites, it adds about one alert a month.
+- **Tracker badges reflect the last 48 hours** instead of 14 days. "QWA + Plausible" becomes "QWA tracker" two days after the last event from the old Plausible script. While a few still arrive (e.g. from cached pages), the site card and Admin → Sites say when the last one came.
+- The top bar and section bar line up with the page's content column on wide screens.
+- The accent colour picker moved from the top bar to the Admin page.
 - PageSpeed tests are spread over 02:10–07:10 UTC, six sites per hour, so no single run is long. A failed test is retried once, and one strategy failing no longer loses the other.
 
 ### Upgrade notes
