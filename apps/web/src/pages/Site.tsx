@@ -1,7 +1,7 @@
 import { useEffect, useMemo, useState } from "react";
 import { useMutation, useQueryClient } from "@tanstack/react-query";
 import type { Dimension, Filter, Metric, TimeGrain } from "@qwa/shared";
-import { api, useAlerts, useAnomalies, useRealtime, useStats, type Me } from "../api";
+import { api, useAlerts, useAnomalies, useRealtime, useStats, type Me, type Realtime } from "../api";
 import { Busy, busyOf, Delta, MinuteBars, Spinner, UpdatedAgo, useInView } from "../components/Bits";
 import { ArrowLeft, Bell, BellOff, Close, External, Search } from "../components/Icons";
 import { LineChart, type ChartMark } from "../components/LineChart";
@@ -10,7 +10,7 @@ import { WorldMap } from "../components/WorldMap";
 import { Section, Seg } from "../components/Section";
 import { SearchSection, SpeedSection } from "./Google";
 import { addDays, comparisonRange, daysBetween, grainsFor, isWeekend, shortDate, weekday, type Compare } from "../dates";
-import { compact, describeAnomaly, DIMENSION_LABELS, displayValue, duration, liveUrl, metricValue, METRIC_LABELS, whole } from "../format";
+import { compact, describeAnomaly, DIMENSION_LABELS, displayValue, duration, liveUrl, metricValue, METRIC_LABELS, trackerState, whole } from "../format";
 import { globalParams, linkHandler, readSiteState, withParams, type Navigate, type SiteState } from "../url";
 
 export const SECTIONS = [
@@ -256,6 +256,7 @@ function Detail({ admin, sites, site, state, url, navigate, dates, compare, peri
             <h1 style={{ margin: 0 }}><SiteSwitcher variant="title" sites={sites} currentId={site.id} url={url} navigate={navigate} dates={{ from, to, cfrom: cmp.from, cto: cmp.to }} /></h1>
             <a href={`https://${site.domain}`} target="_blank" rel="noopener noreferrer" title={`Open ${site.domain}`} aria-label={`Open ${site.domain}`} style={{ display: "inline-flex", color: "var(--muted)" }}><External size={18} /></a>
             <span className="tag tag-neutral">{site.timezone}</span>
+            {admin && rt.data && "qwaLastAt" in rt.data && <TrackerTag rt={rt.data} />}
           </div>
           <div className="sub">{site.domain} · {periodText} compared with {cmpText}</div>
         </div>
@@ -356,6 +357,12 @@ function Detail({ admin, sites, site, state, url, navigate, dates, compare, peri
 }
 
 /** Per-user, per-site switch for anomaly emails. */
+/** Which script is sending events (QWA tracker, Plausible, or both while a migration settles). */
+function TrackerTag({ rt }: { rt: Realtime }) {
+  const t = trackerState(rt);
+  return <span className={t.qwaOnly ? "tag tag-accent" : "tag tag-neutral"} title={t.plausibleNote ?? undefined}>{t.label}</span>;
+}
+
 function AlertBell({ siteId }: { siteId: number }) {
   const alerts = useAlerts();
   const qc = useQueryClient();

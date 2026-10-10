@@ -410,8 +410,11 @@ export class SiteDO extends DurableObject<Env> {
         )
         .toArray();
     const capped = this.meta(`capped:${utcDay(Date.now())}`);
+    const seen = this.lastSeenByVia();
     return {
       cappedAt: capped ? Number(capped) : null,
+      plausibleLastAt: seen.get("plausible") ?? null,
+      qwaLastAt: seen.get("qwa") ?? null,
       visitors5m: count(now - 300),
       visitors30m: count(since),
       perMinute: this.perMinute(now),

@@ -56,6 +56,7 @@ All notable changes to Quick Web Analytics. Dates are UTC. Database changes ship
 - **Line charts scale to what's drawn.** With a partial "today", the comparison line is only drawn as far as today goes, and its later values (e.g. a busy evening yesterday) no longer stretch the axis.
 - **Realtime layout:** the visitors-per-minute bars fill the space beside the live lists, and live list rows inset their text like table rows.
 - **Tracker badges reflect the last 48 hours** instead of 14 days. "QWA + Plausible" becomes "QWA tracker" two days after the last event from the old Plausible script. While a few still arrive (e.g. from cached pages), the site card and Admin → Sites say when the last one came.
+- **Tracker badge on each site's page** (admins): next to the timezone, it shows whether events are arriving through the QWA tracker, the Plausible script, or both, with the same 48-hour rule and "last seen" tooltip as the site cards.
 - The top bar and section bar line up with the page's content column on wide screens.
 - The accent colour picker moved from the top bar to the Admin page.
 - PageSpeed tests are spread over 02:10–07:10 UTC, six sites per hour, so no single run is long. A failed test is retried once, and one strategy failing no longer loses the other.

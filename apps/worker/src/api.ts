@@ -226,7 +226,9 @@ api.post("/alerts/test", async (c) => {
 api.get("/sites/:site/realtime", async (c) => {
   const site = await siteGuard(c);
   if (!site) return c.json({ error: "site not found" }, 404);
-  return c.json(await c.env.SITE.get(c.env.SITE.idFromName(String(site.id))).realtime());
+  const { plausibleLastAt, qwaLastAt, ...rt } = await c.env.SITE.get(c.env.SITE.idFromName(String(site.id))).realtime();
+  // Which tracker is sending events: admins only, as on the overview.
+  return c.json(c.get("user").role === "admin" ? { ...rt, plausibleLastAt, qwaLastAt } : rt);
 });
 
 // ---------- Google: Search Console and speed ----------

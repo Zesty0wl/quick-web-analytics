@@ -116,6 +116,9 @@ export const useAlerts = () => useQuery({ queryKey: ["alerts"], queryFn: () => a
 
 export interface Realtime {
   cappedAt: number | null;
+  /** Unix seconds of the last event through each front door (admins only). */
+  plausibleLastAt?: number | null;
+  qwaLastAt?: number | null;
   visitors5m: number;
   visitors30m: number;
   perMinute: number[];
