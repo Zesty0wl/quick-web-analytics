@@ -307,9 +307,9 @@ function RealVisitors({ c, strategy, visible }: { c: Ctx; strategy: "mobile" | "
   const device = strategy === "mobile" ? "Mobile" : "Desktop";
   const filters = [...c.filters.filter((f) => f[0] !== "device"), ["device", "is", device] as Ctx["filters"][number]];
   const base = { from: c.from, to: c.to, filters };
-  const totals = useStats(c.siteId, { ...base, metrics: ["measured_views", "inp", "lcp", "cls", "ttfb", "fcp", "inp_delay", "inp_processing", "inp_presentation"] }, visible);
-  const targets = useStats(c.siteId, { ...base, metrics: ["measured_views", "inp", "inp_delay", "inp_processing", "inp_presentation"], groupBy: "inp_target", limit: 6 }, visible);
-  const pages = useStats(c.siteId, { ...base, metrics: ["measured_views", "inp", "lcp", "cls"], groupBy: "page", limit: 8 }, visible);
+  const totals = useStats(c.site, { ...base, metrics: ["measured_views", "inp", "lcp", "cls", "ttfb", "fcp", "inp_delay", "inp_processing", "inp_presentation"] }, { enabled: visible });
+  const targets = useStats(c.site, { ...base, metrics: ["measured_views", "inp", "inp_delay", "inp_processing", "inp_presentation"], groupBy: "inp_target", limit: 6 }, { enabled: visible });
+  const pages = useStats(c.site, { ...base, metrics: ["measured_views", "inp", "lcp", "cls"], groupBy: "page", limit: 8 }, { enabled: visible });
   const t = (totals.data?.rows[0] ?? {}) as Row;
   const measured = Number(t.measured_views ?? 0);
   const tRows = (targets.data?.rows ?? []) as Row[];

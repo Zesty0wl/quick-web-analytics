@@ -1,10 +1,8 @@
-// World basemap (Natural Earth via world-atlas, bundled locally) with accent dots sized by visitors per country.
+// World basemap (Natural Earth via world-atlas, projected ahead of time into worldShapes.ts) with accent dots sized by
+// visitors per country.
 import { useMemo } from "react";
-import { geoCentroid, geoEqualEarth, geoPath, type GeoPermissibleObjects } from "d3-geo";
-import { feature } from "topojson-client";
-import type { GeometryCollection, Topology } from "topojson-specification";
-import world from "world-atlas/countries-110m.json";
 import { countryName, whole } from "../format";
+import { CENTROIDS, SHAPES, VIEW_H, VIEW_W } from "./worldShapes";
 
 // ISO 3166-1 alpha-2 → numeric (world-atlas feature ids), built from Intl where possible plus a table.
 const NUMERIC: Record<string, string> = {
@@ -19,21 +17,15 @@ const NUMERIC: Record<string, string> = {
   MK: "807", ME: "499", MD: "498", MT: "470", BH: "048", TT: "780", SN: "686", CI: "384", AO: "024", MZ: "508", SD: "729", LY: "434",
 };
 
-const topo = world as unknown as Topology<{ countries: GeometryCollection }>;
-const countries = feature(topo, topo.objects.countries) as unknown as { features: (GeoPermissibleObjects & { id?: string })[] };
-const VIEW_W = 960;
-const VIEW_H = 400;
-const projection = geoEqualEarth().fitExtent([[8, 8], [VIEW_W - 8, VIEW_H - 8]], countries as never);
-const path = geoPath(projection);
-const shapes = countries.features.map((f) => ({ id: String(f.id ?? ""), d: path(f) ?? "", f }));
-const centroids = new Map(shapes.map((s) => [s.id, projection(geoCentroid(s.f)) ?? null]));
+// The basemap never changes, so it's one element React builds once.
+const basemap = SHAPES.map(([id, d], i) => <path key={id || i} d={d} fill="color-mix(in srgb, var(--tint) 9%, transparent)" stroke="var(--color-bg)" strokeWidth={0.6} />);
 
 export function WorldMap({ data, caption, onPick }: { data: { code: string; visitors: number }[]; caption: string; onPick?: (code: string) => void }) {
   const max = Math.max(1, ...data.map((d) => d.visitors));
   const dots = useMemo(
     () =>
       data
-        .map((d) => ({ ...d, at: centroids.get(NUMERIC[d.code] ?? "") ?? null }))
+        .map((d) => ({ ...d, at: CENTROIDS[NUMERIC[d.code] ?? ""] ?? null }))
         .filter((d) => d.at && d.visitors > 0)
         .sort((a, b) => b.visitors - a.visitors),
     [data],
@@ -41,9 +33,7 @@ export function WorldMap({ data, caption, onPick }: { data: { code: string; visi
   return (
     <div className="map">
       <svg viewBox={`0 0 ${VIEW_W} ${VIEW_H}`} preserveAspectRatio="xMidYMid meet" role="img" aria-label={caption}>
-        {shapes.map((s) => (
-          <path key={s.id || s.d.slice(0, 12)} d={s.d} fill="color-mix(in srgb, var(--tint) 9%, transparent)" stroke="var(--color-bg)" strokeWidth={0.6} />
-        ))}
+        {basemap}
         {dots.map((d) => {
           const r = 3 + Math.sqrt(d.visitors / max) * 13;
           return (

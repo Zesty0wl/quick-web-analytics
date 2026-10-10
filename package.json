@@ -10,7 +10,7 @@
   ],
   "scripts": {
     "build": "npm run build -w packages/tracker && npm run build -w apps/web && node scripts/assemble-assets.mjs",
-    "test": "npm test -w apps/worker -w apps/query -w packages/tracker",
+    "test": "npm test -w apps/worker -w apps/query -w apps/web -w packages/tracker",
     "typecheck": "npm run typecheck -w apps/worker -w apps/query -w apps/web",
     "deploy": "npm run build && npm run deploy -w apps/query && npm run deploy -w apps/worker",
     "demo": "node scripts/demo.mjs"

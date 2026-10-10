@@ -1,8 +1,8 @@
 import { useInView } from "./Bits";
 
-/** A dashboard section that renders its body once scrolled near (so off-screen queries wait). */
+/** A dashboard section that renders its body once scrolled near, and lets its queries run only while it's near. */
 export function Section({ id, title, sub, right, children }: { id: string; title: string; sub?: React.ReactNode; right?: React.ReactNode; children: (visible: boolean) => React.ReactNode }) {
-  const [ref, seen] = useInView<HTMLElement>();
+  const [ref, seen, near] = useInView<HTMLElement>();
   return (
     <section id={id} className="section" ref={ref}>
       <div className="section-head">
@@ -10,7 +10,7 @@ export function Section({ id, title, sub, right, children }: { id: string; title
         {sub && <span className="muted" style={{ marginRight: right ? "auto" : undefined }}>{sub}</span>}
         {right}
       </div>
-      {seen ? children(true) : <div className="placeholder" />}
+      {seen ? children(near) : <div className="placeholder" />}
     </section>
   );
 }

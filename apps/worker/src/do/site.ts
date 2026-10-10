@@ -7,12 +7,15 @@ import type { SiteEvent, Vitals } from "../ingest/types";
 import { emptyColumns, TableWriter } from "../storage/parquet";
 import { mergeTable, r2Buffer, type MergeSource } from "../storage/compact";
 import { randomId, utcDay } from "../ingest/visitor";
+import { forViewer } from "../realtime";
 
 const SESSION_TIMEOUT_S = 30 * 60;
 const FLUSH_INTERVAL_MS = 5 * 60 * 1000;
 const LOCAL_RETENTION_S = 3 * 86_400;
 /** How often live day files for queries may be rebuilt (per day), while events keep arriving. */
 const LIVE_REBUILD_MS = 5_000;
+/** Dashboards watching this site get at most one live update per this interval while events arrive. */
+const PUSH_INTERVAL_MS = 2_000;
 /** Web Vitals columns on the local events table (engagement events), matching the engagement Parquet columns. */
 const VITAL_EVENT_COLUMNS: [keyof Vitals, "INTEGER" | "TEXT"][] = [
   ["pv", "INTEGER"], ["inp", "INTEGER"], ["inp_target", "TEXT"], ["inp_type", "TEXT"], ["inp_delay", "INTEGER"], ["inp_processing", "INTEGER"],
@@ -23,6 +26,8 @@ const SESSION_COLS = COLUMNS.sessions.map(([c]) => c);
 
 /** What happened to an ingested event. "capped-first" is returned once per day, when the daily cap is first hit. */
 export type IngestResult = "ok" | "dropped" | "capped" | "capped-first";
+
+export type Realtime = ReturnType<SiteDO["snapshot"]>;
 
 export class SiteDO extends DurableObject<Env> {
   private sql: SqlStorage;
@@ -35,6 +40,10 @@ export class SiteDO extends DurableObject<Env> {
   private today: { day: string; n: number } | null = null; // events counted so far today (UTC), for the cap
   private siteKnown = false;
   private cappedDay: string | null | undefined; // day this site is marked capped (undefined = not looked up yet)
+  // Data version: the id of the newest stored event. Dashboards refresh reports that include today when it changes.
+  private seq: number | null = null;
+  private lastPush = 0;
+  private pushTimer: ReturnType<typeof setTimeout> | null = null;
 
   constructor(ctx: DurableObjectState, env: Env) {
     super(ctx, env);
@@ -135,6 +144,7 @@ export class SiteDO extends DurableObject<Env> {
       if (this.cappedDay === eventDay) return "capped";
       this.setMeta(`capped:${eventDay}`, String(Math.floor(Date.now() / 1000)));
       this.cappedDay = eventDay;
+      this.schedulePush();
       return "capped-first";
     }
     if (this.cappedDay === eventDay) {
@@ -210,6 +220,8 @@ export class SiteDO extends DurableObject<Env> {
       ...VITAL_EVENT_COLUMNS.map(([c, type]) => (v ? v[c] : type === "TEXT" ? "" : 0)),
     );
 
+    if (this.seq !== null) this.seq++;
+    this.schedulePush();
     this.markDirty(eventDay);
     if (startDay !== eventDay) this.markDirty(startDay);
     if (this.today?.day === eventDay) this.today.n++;
@@ -237,11 +249,13 @@ export class SiteDO extends DurableObject<Env> {
    * Fresh Parquet for every day with changes not yet flushed to R2, keyed by R2 key (null = the table has no rows that
    * day, so any R2 copy is stale). The query worker reads these instead of R2's copies, so queries covering today
    * include events from the last few minutes. Rebuilt at most every few seconds per day, and only if something changed.
+   * `tag` names this exact content, so query results built from it can be cached until it changes.
    */
-  async liveFiles(): Promise<Record<string, ArrayBuffer | null>> {
+  async liveFiles(): Promise<{ files: Record<string, ArrayBuffer | null>; tag: string }> {
     const siteId = Number(this.meta("site_id"));
-    if (!siteId) return {};
+    if (!siteId) return { files: {}, tag: "" };
     const out: Record<string, ArrayBuffer | null> = {};
+    const tag: string[] = [];
     for (const day of this.persistedDirty) {
       const version = this.dirtyVersion.get(day) ?? 0;
       let hit = this.liveCache.get(day);
@@ -253,9 +267,10 @@ export class SiteDO extends DurableObject<Env> {
         this.liveCache.set(day, hit);
       }
       Object.assign(out, hit.files);
+      tag.push(`${day}@${hit.version}.${hit.at}`);
     }
     for (const day of this.liveCache.keys()) if (!this.persistedDirty.has(day)) this.liveCache.delete(day);
-    return out;
+    return { files: out, tag: tag.sort().join(",") };
   }
 
   /** Rewrite the Parquet files for every day that changed since the last flush. */
@@ -397,6 +412,16 @@ export class SiteDO extends DurableObject<Env> {
 
   /** Live view: visitors now (5 min), per-minute history, and what people are looking at / arriving from (30 min). */
   async realtime() {
+    return this.snapshot();
+  }
+
+  /** The data version: changes whenever an event is stored. */
+  private dataVersion(): number {
+    if (this.seq === null) this.seq = this.sql.exec<{ v: number }>("SELECT COALESCE(MAX(id), 0) v FROM events").one().v;
+    return this.seq;
+  }
+
+  snapshot() {
     const now = Math.floor(Date.now() / 1000);
     const since = now - 1800;
     const count = (from: number) =>
@@ -412,6 +437,7 @@ export class SiteDO extends DurableObject<Env> {
     const capped = this.meta(`capped:${utcDay(Date.now())}`);
     const seen = this.lastSeenByVia();
     return {
+      version: String(this.dataVersion()),
       cappedAt: capped ? Number(capped) : null,
       plausibleLastAt: seen.get("plausible") ?? null,
       qwaLastAt: seen.get("qwa") ?? null,
@@ -427,6 +453,64 @@ export class SiteDO extends DurableObject<Env> {
       sources: top("source", 6),
       countries: top("country", 40),
     };
+  }
+
+  // ---- Live updates for dashboards: hibernatable WebSockets, so an idle watcher costs nothing ----
+
+  /** Upgrade to a WebSocket (the Worker has already checked who's asking). `?admin=1` includes admin-only fields. */
+  async fetch(req: Request): Promise<Response> {
+    if (req.headers.get("upgrade")?.toLowerCase() !== "websocket") return new Response("expected a WebSocket upgrade", { status: 426 });
+    const admin = new URL(req.url).searchParams.get("admin") === "1";
+    const [client, server] = Object.values(new WebSocketPair());
+    this.ctx.acceptWebSocket(server);
+    server.serializeAttachment({ admin });
+    server.send(this.liveMessage(this.snapshot(), admin));
+    return new Response(null, { status: 101, webSocket: client });
+  }
+
+  /** The dashboard asks for a fresh snapshot now and then, so "visitors now" falls when traffic stops. */
+  async webSocketMessage(ws: WebSocket, message: string | ArrayBuffer) {
+    if (message !== "refresh") return;
+    ws.send(this.liveMessage(this.snapshot(), this.isAdmin(ws)));
+  }
+
+  async webSocketClose(ws: WebSocket, code: number) {
+    try {
+      ws.close(code === 1005 || code === 1006 ? 1000 : code);
+    } catch {
+      // already closed
+    }
+  }
+
+  async webSocketError() {}
+
+  private isAdmin(ws: WebSocket): boolean {
+    return (ws.deserializeAttachment() as { admin?: boolean } | null)?.admin === true;
+  }
+
+  private liveMessage(snap: Realtime, admin: boolean): string {
+    return JSON.stringify({ type: "live", ...(admin ? snap : forViewer(snap)) });
+  }
+
+  /** Push a snapshot to watching dashboards soon: at most one per PUSH_INTERVAL_MS, always including the latest event. */
+  private schedulePush() {
+    if (this.pushTimer || this.ctx.getWebSockets().length === 0) return;
+    const wait = Math.max(0, this.lastPush + PUSH_INTERVAL_MS - Date.now());
+    this.pushTimer = setTimeout(() => {
+      this.pushTimer = null;
+      this.lastPush = Date.now();
+      const sockets = this.ctx.getWebSockets();
+      if (!sockets.length) return;
+      const snap = this.snapshot();
+      const msgs = { admin: this.liveMessage(snap, true), viewer: this.liveMessage(snap, false) };
+      for (const ws of sockets) {
+        try {
+          ws.send(this.isAdmin(ws) ? msgs.admin : msgs.viewer);
+        } catch {
+          // closing; the runtime tidies it up
+        }
+      }
+    }, wait);
   }
 
   /** Totals for a local day [start, end) from the live store (complete only if first_event_at <= start). */

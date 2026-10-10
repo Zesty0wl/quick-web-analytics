@@ -1,7 +1,9 @@
 import { Hono } from "hono";
-import { validateSpec } from "@qwa/shared";
-import { AuthError, canViewSite, currentUser, visibleSiteIds, type User } from "./auth";
-import type { Env } from "./env";
+import { validateSpec, type QuerySpec } from "@qwa/shared";
+import { AuthError, canViewSite, currentUser, forgetUsers, visibleSiteIds, type User } from "./auth";
+import type { Env, Site } from "./env";
+import { forViewer } from "./realtime";
+import type { LiveFiles } from "../../query/src/index";
 import { allSites, invalidateSites, siteById } from "./sites";
 import { alertDetail, anomalyJob, checkIntraday, emailConfigured, refreshAnomalies, sendAlertEmail, siteAnomalies } from "./alerts";
 import { sampleAlert } from "./email";
@@ -38,7 +40,7 @@ api.use("*", async (c, next) => {
   }
   // MCP tool calls run through these same routes as the token's user (set by mcp.ts, never from a request).
   const internal = (c.env as Env & { [INTERNAL_USER]?: User })[INTERNAL_USER];
-  c.set("user", internal ?? (await currentUser(c.req.raw, c.env)));
+  c.set("user", internal ?? (await currentUser(c.req.raw, c.env, c.executionCtx)));
   await next();
 });
 
@@ -58,6 +60,25 @@ api.get("/me", async (c) => {
 const DATE = /^\d{4}-\d{2}-\d{2}$/;
 const EMPTY = (day: string): DayStats => ({ day, visitors: 0, visits: 0, pageviews: 0, events: 0, bounces: 0, duration_sum: 0 });
 
+// Closed days' totals only change when the nightly rollup runs, so the overview's polls reuse them for a few minutes.
+// Days the rollup hasn't reached yet come live from each site's Durable Object either way.
+const PAST_TTL_MS = 5 * 60_000;
+const pastCache = new Map<string, { at: number; stored: Map<number, DayStats[]>; lastActive: Map<number, string> }>();
+
+async function pastTotals(env: Env, ids: number[], fromDay: string) {
+  const key = `${ids.join(",")}|${fromDay}`;
+  const hit = pastCache.get(key);
+  if (hit && Date.now() - hit.at < PAST_TTL_MS) return hit;
+  const [stored, { results }] = await Promise.all([
+    storedDays(env, ids, fromDay),
+    env.DB.prepare("SELECT site_id, MAX(day) day FROM daily_stats WHERE visitors > 0 OR pageviews > 0 GROUP BY site_id").all<{ site_id: number; day: string }>(),
+  ]);
+  const entry = { at: Date.now(), stored, lastActive: new Map(results.map((r) => [r.site_id, r.day])) };
+  if (pastCache.size >= 16) pastCache.delete(pastCache.keys().next().value!);
+  pastCache.set(key, entry);
+  return entry;
+}
+
 /**
  * All visible sites with daily totals for the current range (`from`..`to`) and the comparison range
  * (`cfrom`..`cto`). Closed days come from D1; today (and yesterday until rolled up) live from each site's
@@ -72,10 +93,8 @@ api.get("/overview", async (c) => {
 
   const visible = await visibleSiteIds(c.env, user);
   const sites = (await allSites(c.env)).filter((s) => visible === "all" || visible.includes(s.id));
-  const stored = await storedDays(c.env, sites.map((s) => s.id), [from, cfrom].sort()[0]);
-  const { results: activeRows } = await c.env.DB.prepare("SELECT site_id, MAX(day) day FROM daily_stats WHERE visitors > 0 OR pageviews > 0 GROUP BY site_id").all<{ site_id: number; day: string }>();
-  const lastActive = new Map(activeRows.map((r) => [r.site_id, r.day]));
-  const anomalies = await siteAnomalies(c.env, sites.map((s) => s.id), [from, cfrom].sort()[0], to);
+  const ids = sites.map((s) => s.id);
+  const [{ stored, lastActive }, anomalies] = await Promise.all([pastTotals(c.env, ids, [from, cfrom].sort()[0]), siteAnomalies(c.env, ids, [from, cfrom].sort()[0], to)]);
 
   const out = await Promise.all(
     sites.map(async (site) => {
@@ -129,6 +148,16 @@ api.get("/overview", async (c) => {
   return c.json({ sites: out });
 });
 
+/** Ranges reaching today (or yesterday, just after midnight) include events the site hasn't flushed to R2 yet. */
+async function liveFor(env: Env, site: Site, specs: QuerySpec[]): Promise<LiveFiles | undefined> {
+  const since = addDays(todayIn(site.timezone), -1);
+  if (!specs.some((s) => s.to >= since)) return undefined;
+  return env.SITE.get(env.SITE.idFromName(String(site.id))).liveFiles().catch((e) => {
+    console.warn("live files unavailable", site.domain, e);
+    return undefined;
+  });
+}
+
 api.post("/sites/:site/query", async (c) => {
   const site = await siteGuard(c);
   if (!site) return c.json({ error: "site not found" }, 404);
@@ -138,20 +167,52 @@ api.post("/sites/:site/query", async (c) => {
   } catch (e) {
     return c.json({ error: (e as Error).message }, 400);
   }
-  // Ranges reaching today (or yesterday, just after midnight) include events the site hasn't flushed to R2 yet.
-  let live: Record<string, ArrayBuffer | null> | undefined;
-  if (spec.to >= addDays(todayIn(site.timezone), -1)) {
-    live = await c.env.SITE.get(c.env.SITE.idFromName(String(site.id))).liveFiles().catch((e) => {
-      console.warn("live files unavailable", site.domain, e);
-      return undefined;
-    });
-  }
+  const live = await liveFor(c.env, site, [spec]);
   try {
     return c.json(await c.env.QUERY.query(site.id, site.timezone, spec, live));
   } catch (e) {
     console.error("query failed", e);
     return c.json({ error: `query failed: ${(e as Error).message}` }, 502);
   }
+});
+
+const MAX_BATCH = 40;
+
+/**
+ * Several queries for one site in one request: one sign-in check and one copy of the live data for all of them.
+ * Answers stream back as NDJSON lines, `{"i":<index>,"result":…}` or `{"i":<index>,"error":"…"}`, each as soon as
+ * it's ready (cached answers first), so a slow report never holds up a fast one.
+ */
+api.post("/sites/:site/batch", async (c) => {
+  const site = await siteGuard(c);
+  if (!site) return c.json({ error: "site not found" }, 404);
+  const body = await c.req.json<{ queries?: unknown }>().catch(() => null);
+  const raw = Array.isArray(body?.queries) ? body.queries : null;
+  if (!raw || raw.length === 0 || raw.length > MAX_BATCH) return c.json({ error: `queries must be a list of 1 to ${MAX_BATCH} query specs` }, 400);
+  const items: { i: number; spec: QuerySpec }[] = [];
+  const invalid: string[] = [];
+  raw.forEach((q, i) => {
+    try {
+      items.push({ i, spec: validateSpec(q) });
+    } catch (e) {
+      invalid.push(`${JSON.stringify({ i, error: (e as Error).message, status: 400 })}\n`);
+    }
+  });
+  const headers = { "content-type": "application/x-ndjson", "cache-control": "no-store" };
+  if (!items.length) return new Response(invalid.join(""), { headers });
+  const live = await liveFor(c.env, site, items.map((x) => x.spec));
+  const answers = await c.env.QUERY.queryMany(site.id, site.timezone, items, live);
+  if (!invalid.length) return new Response(answers, { headers });
+  const { readable, writable } = new IdentityTransformStream();
+  c.executionCtx.waitUntil(
+    (async () => {
+      const w = writable.getWriter();
+      await w.write(new TextEncoder().encode(invalid.join("")));
+      w.releaseLock();
+      await answers.pipeTo(writable);
+    })().catch((e) => console.warn("batch stream ended early", e)),
+  );
+  return new Response(readable, { headers });
 });
 
 // ---------- anomalies and alerts ----------
@@ -226,9 +287,21 @@ api.post("/alerts/test", async (c) => {
 api.get("/sites/:site/realtime", async (c) => {
   const site = await siteGuard(c);
   if (!site) return c.json({ error: "site not found" }, 404);
-  const { plausibleLastAt, qwaLastAt, ...rt } = await c.env.SITE.get(c.env.SITE.idFromName(String(site.id))).realtime();
+  const rt = await c.env.SITE.get(c.env.SITE.idFromName(String(site.id))).realtime();
   // Which tracker is sending events: admins only, as on the overview.
-  return c.json(c.get("user").role === "admin" ? { ...rt, plausibleLastAt, qwaLastAt } : rt);
+  return c.json(c.get("user").role === "admin" ? rt : forViewer(rt));
+});
+
+/** Live updates over a WebSocket: the site's Durable Object pushes a realtime snapshot whenever events arrive. */
+api.get("/sites/:site/live", async (c) => {
+  // Browsers send cookies with cross-site WebSocket handshakes, so only accept this dashboard's own pages.
+  const origin = c.req.header("origin");
+  if (origin && new URL(origin).host !== new URL(c.req.url).host) return c.json({ error: "cross-origin request" }, 403);
+  const site = await siteGuard(c);
+  if (!site) return c.json({ error: "site not found" }, 404);
+  if (c.req.header("upgrade")?.toLowerCase() !== "websocket") return c.json({ error: "expected a WebSocket upgrade" }, 426);
+  const admin = c.get("user").role === "admin" ? "1" : "0";
+  return c.env.SITE.get(c.env.SITE.idFromName(String(site.id))).fetch(new Request(`https://site.internal/live?admin=${admin}`, { headers: { upgrade: "websocket" } }));
 });
 
 // ---------- Google: Search Console and speed ----------
@@ -693,6 +766,7 @@ async function setGrants(env: Env, userId: number, siteIds: number[], grantedBy:
     stmts.push(env.DB.prepare("INSERT INTO site_access (user_id, site_id, granted_by) SELECT ?, id, ? FROM sites WHERE id = ?").bind(userId, grantedBy, sid));
   }
   await env.DB.batch(stmts);
+  forgetUsers();
 }
 
 admin.post("/users", async (c) => {
@@ -716,6 +790,7 @@ admin.patch("/users/:id", async (c) => {
     await c.env.DB.prepare("UPDATE users SET role = COALESCE(?, role), name = COALESCE(?, name) WHERE id = ?")
       .bind(body.role === "admin" || body.role === "viewer" ? body.role : null, body.name ?? null, id)
       .run();
+    forgetUsers();
   }
   if (Array.isArray(body.site_ids)) await setGrants(c.env, id, body.site_ids, c.get("user").id);
   return c.json({ ok: true });
@@ -725,6 +800,7 @@ admin.delete("/users/:id", async (c) => {
   const id = Number(c.req.param("id"));
   if (id === c.get("user").id) return c.json({ error: "you can't delete yourself" }, 400);
   await c.env.DB.prepare("DELETE FROM users WHERE id = ?").bind(id).run();
+  forgetUsers();
   return c.json({ ok: true });
 });
 

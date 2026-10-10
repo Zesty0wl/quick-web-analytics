@@ -310,7 +310,10 @@ function Sites() {
   const status = useQuery({
     queryKey: ["admin-status"],
     queryFn: () => api<{ status: Record<string, SiteStatus | null> }>("/admin/sites/status"),
-    refetchInterval: 15_000,
+    // Asks every site's Durable Object, so not too often; Install polls faster while it waits for a first event.
+    refetchInterval: 30_000,
+    refetchOnWindowFocus: true,
+    staleTime: 10_000,
   });
   const [openId, setOpenId] = useState<number | null>(null);
   const [domain, setDomain] = useState("");

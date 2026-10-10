@@ -1,5 +1,6 @@
-import { useQuery } from "@tanstack/react-query";
+import { useQuery, useQueryClient, type Query } from "@tanstack/react-query";
 import type { Filter, GroupBy, Metric, QueryResult } from "@qwa/shared";
+import { addDays, todayIn } from "./dates";
 
 export interface Me {
   user: { id: number; email: string; name: string | null; role: "admin" | "viewer" };
@@ -14,6 +15,13 @@ export class ApiError extends Error {
 
 const TIMEOUT_MS = 60_000;
 
+function networkError(e: unknown): ApiError {
+  if (e instanceof ApiError) return e;
+  const name = (e as Error).name;
+  if (name === "TimeoutError" || name === "AbortError") return new ApiError("This took over a minute, so it was stopped. Try a shorter date range.", 504);
+  return new ApiError("Couldn't reach the server. Check your connection and try again.", 0);
+}
+
 export async function api<T>(path: string, init?: RequestInit): Promise<T> {
   let res: Response;
   try {
@@ -25,8 +33,7 @@ export async function api<T>(path: string, init?: RequestInit): Promise<T> {
       signal: init?.signal ?? AbortSignal.timeout(TIMEOUT_MS),
     });
   } catch (e) {
-    if ((e as Error).name === "TimeoutError") throw new ApiError("This took over a minute, so it was stopped. Try a shorter date range.", 504);
-    throw new ApiError("Couldn't reach the server. Check your connection and try again.", 0);
+    throw networkError(e);
   }
   const body = await res.json().catch(() => ({}));
   if (!res.ok) throw new ApiError(body.error ?? res.statusText, res.status);
@@ -44,13 +51,143 @@ export interface StatsQuery {
   limit?: number;
 }
 
-export function useStats(siteId: number | undefined, q: StatsQuery, enabled = true) {
+// ---------- Report queries: batched, cached while the data can't change, refreshed live while it can ----------
+
+const BATCH_WINDOW_MS = 8;
+const MAX_BATCH = 40;
+
+type Waiting = { spec: StatsQuery; resolve: (r: QueryResult) => void; reject: (e: Error) => void };
+const queued = new Map<number, Waiting[]>();
+
+/** Split streamed text into complete lines and the unfinished rest. */
+export function splitLines(text: string): { lines: string[]; rest: string } {
+  const parts = text.split("\n");
+  const rest = parts.pop() ?? "";
+  return { lines: parts.filter((l) => l.trim() !== ""), rest };
+}
+
+/**
+ * Run a report query. Queries asked for within a few milliseconds of each other (a page's worth) go to the server in
+ * one request, and each resolves as soon as its own answer streams back.
+ */
+export function loadStats(siteId: number, spec: StatsQuery): Promise<QueryResult> {
+  return new Promise((resolve, reject) => {
+    let q = queued.get(siteId);
+    if (!q) {
+      queued.set(siteId, (q = []));
+      setTimeout(() => {
+        const all = queued.get(siteId) ?? [];
+        queued.delete(siteId);
+        for (let i = 0; i < all.length; i += MAX_BATCH) void sendBatch(siteId, all.slice(i, i + MAX_BATCH));
+      }, BATCH_WINDOW_MS);
+    }
+    q.push({ spec, resolve, reject });
+  });
+}
+
+async function sendBatch(siteId: number, items: Waiting[]): Promise<void> {
+  if (items.length === 1) {
+    api<QueryResult>(`/sites/${siteId}/query`, { method: "POST", body: JSON.stringify(items[0].spec) }).then(items[0].resolve, items[0].reject);
+    return;
+  }
+  const settled = new Set<number>();
+  const settle = (i: number, fn: () => void) => {
+    if (!items[i] || settled.has(i)) return;
+    settled.add(i);
+    fn();
+  };
+  // The minute's timeout restarts with every answer, so a long batch isn't cut off while it's still answering.
+  const ctrl = new AbortController();
+  let timer = setTimeout(() => ctrl.abort(), TIMEOUT_MS);
+  try {
+    let res: Response;
+    try {
+      res = await fetch(`/api/sites/${siteId}/batch`, {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        credentials: "same-origin",
+        body: JSON.stringify({ queries: items.map((x) => x.spec) }),
+        signal: ctrl.signal,
+      });
+    } catch (e) {
+      throw networkError(e);
+    }
+    if (!res.ok || !res.body) {
+      const body = await res.json().catch(() => ({}));
+      throw new ApiError(body.error ?? res.statusText, res.status);
+    }
+    const reader = res.body.pipeThrough(new TextDecoderStream()).getReader();
+    let buf = "";
+    for (;;) {
+      const { value, done } = await reader.read().catch((e) => { throw networkError(e); });
+      if (done) break;
+      clearTimeout(timer);
+      timer = setTimeout(() => ctrl.abort(), TIMEOUT_MS);
+      const { lines, rest } = splitLines(buf + value);
+      buf = rest;
+      for (const line of lines) {
+        const m = JSON.parse(line) as { i: number; result?: QueryResult; error?: string; status?: number };
+        settle(m.i, () => (m.result ? items[m.i].resolve(m.result) : items[m.i].reject(new ApiError(m.error ?? "query failed", m.status ?? 502))));
+      }
+    }
+    throw new ApiError("The server didn't answer this query. Try again.", 502);
+  } catch (e) {
+    const err = networkError(e);
+    items.forEach((it, i) => settle(i, () => it.reject(err)));
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
+export interface SiteRef {
+  id: number;
+  timezone: string;
+}
+
+/** How quickly a report follows new events: "fast" for the headline numbers and chart, "slow" for the sections. */
+export type Freshness = "fast" | "slow";
+export const FRESHNESS_MS: Record<Freshness, number> = { fast: 10_000, slow: 30_000 };
+/** Even without word of new events (e.g. the live connection is down), reports reaching today refresh this often. */
+export const FALLBACK_REFRESH_MS = 5 * 60_000;
+
+/** A report's answer, plus the site's data version when it was asked for. */
+export type Stats = QueryResult & { version?: string };
+
+/** Does this range reach today in the site's timezone (so new events still change it)? */
+export const isLive = (q: { to: string }, tz: string) => q.to >= todayIn(tz);
+
+export function useStats(site: SiteRef | undefined, q: StatsQuery, opts: { enabled?: boolean; freshness?: Freshness } = {}) {
+  const qc = useQueryClient();
+  const today = site ? todayIn(site.timezone) : "";
   return useQuery({
-    queryKey: ["stats", siteId, q],
-    queryFn: () => api<QueryResult>(`/sites/${siteId}/query`, { method: "POST", body: JSON.stringify(q) }),
-    enabled: enabled && siteId !== undefined,
-    staleTime: 60_000,
+    queryKey: ["stats", site?.id, q],
+    queryFn: async (): Promise<Stats> => {
+      const version = qc.getQueryData<Realtime>(["realtime", site!.id])?.version;
+      return { ...(await loadStats(site!.id, q)), version };
+    },
+    enabled: (opts.enabled ?? true) && site !== undefined,
+    // Ranges before yesterday never change. Yesterday can still gain a little (visits running past midnight).
+    // Ranges reaching today are refreshed by useLiveUpdates as events arrive.
+    staleTime: q.to === addDays(today, -1) ? 60 * 60_000 : Infinity,
+    meta: { freshness: opts.freshness ?? "slow" },
     placeholderData: (prev) => prev,
+  });
+}
+
+/**
+ * Which of a site's on-screen live reports to refresh now: those asked for before the latest data version, once they're
+ * older than their freshness interval (or older than the fallback interval regardless). `baseline` stands in for the
+ * version of answers fetched before any version was known.
+ */
+export function staleLiveQueries(queries: Query[], tz: string, version: string | undefined, baseline: string | undefined, now = Date.now()): Query[] {
+  return queries.filter((q) => {
+    const spec = q.queryKey[2] as StatsQuery | undefined;
+    const data = q.state.data as Stats | undefined;
+    if (!spec || !data || q.state.fetchStatus !== "idle" || !isLive(spec, tz)) return false;
+    const age = now - q.state.dataUpdatedAt;
+    if (age >= FALLBACK_REFRESH_MS) return true;
+    const changed = version !== undefined && (data.version ?? baseline) !== version;
+    return changed && age >= FRESHNESS_MS[(q.meta?.freshness as Freshness | undefined) ?? "slow"];
   });
 }
 
@@ -100,6 +237,8 @@ export const useOverview = (r: { from: string; to: string; cfrom: string; cto: s
     queryKey: ["overview", r],
     queryFn: () => api<{ sites: OverviewSite[] }>(`/overview?${new URLSearchParams(r)}`),
     refetchInterval: 30_000,
+    refetchOnWindowFocus: true,
+    staleTime: 10_000,
     placeholderData: (prev) => prev,
   });
 
@@ -115,6 +254,8 @@ export function useAnomalies(siteId: number, from: string, to: string) {
 export const useAlerts = () => useQuery({ queryKey: ["alerts"], queryFn: () => api<{ email: boolean; all: boolean; sites: number[] }>("/alerts") });
 
 export interface Realtime {
+  /** Changes whenever the site stores an event. */
+  version?: string;
   cappedAt: number | null;
   /** Unix seconds of the last event through each front door (admins only). */
   plausibleLastAt?: number | null;
@@ -127,12 +268,14 @@ export interface Realtime {
   countries: { name: string; visitors: number }[];
 }
 
-export function useRealtime(siteId: number | undefined) {
+/** The site's live numbers. Pushed over a WebSocket by useLiveUpdates; `poll` fetches them instead while that's down. */
+export function useRealtime(siteId: number | undefined, poll = true) {
   return useQuery({
     queryKey: ["realtime", siteId],
     queryFn: () => api<Realtime>(`/sites/${siteId}/realtime`),
-    enabled: siteId !== undefined,
-    refetchInterval: 10_000,
+    enabled: siteId !== undefined && poll,
+    refetchInterval: poll ? 10_000 : false,
+    refetchOnWindowFocus: poll,
   });
 }
 

@@ -94,6 +94,13 @@ The query Worker turns it into DuckDB SQL (`apps/query/src/sql.ts`) and runs it 
 | A busy month (about 3M events) | 0.5–2.0 s |
 | 12 months | 2.3–4.1 s |
 
+### Batching and caching
+
+- **Batches:** the dashboard sends the queries a page asks for at the same moment as one `POST /api/sites/<id>/batch`. The main Worker checks sign-in and fetches the live day files once, then passes the batch to the query Worker, which streams NDJSON answers back as each finishes, cached ones first.
+- **Answer cache:** each query Worker isolate keeps recent answers in memory (an LRU of 400 answers or 8 MB). The key covers the query, the timezone, every file it reads (R2 URLs carry the ETag) and the live data's tag, so new events or a rewritten file make a new key, and an answer is never stale.
+  - **Why memory, not the Cache API:** the Cache API isn't available to Workers behind Cloudflare Access.
+- **In the browser:** answers for ranges that end before yesterday are kept for good, and ranges ending yesterday for an hour. Ranges reaching today are refreshed by live updates (below).
+
 ### Daily totals
 
 The all-sites overview never touches DuckDB.
@@ -101,6 +108,17 @@ The all-sites overview never touches DuckDB.
 - **Today and the live numbers** come from each site's Durable Object.
 
 So the overview loads instantly for any range, however many sites there are.
+
+## Live updates
+
+A site's page opens a WebSocket to `/api/sites/<id>/live`. The Worker checks sign-in, the site grant and the Origin, then hands the socket to the site's Durable Object.
+
+- **Hibernation:** the object accepts it with the WebSocket Hibernation API, so an open but quiet connection costs nothing.
+- **Pushes:** when events arrive, the object pushes a realtime snapshot, at most every 2 seconds. The snapshot carries a data version (the newest event's id).
+- **Refreshing reports:** reports that include today refetch when the version has moved past the one they were fetched at: the headline numbers and chart after at least 10 seconds, sections after 30. Only on-screen reports refetch, as a batch.
+- **Quiet periods:** after 25 seconds without a push, the page asks for a fresh snapshot, so "visitors now" falls when traffic stops.
+- **Hidden tabs:** the socket closes and reopens on return.
+- **Fallback:** if it can't connect, the page polls `/api/sites/<id>/realtime` (which carries the same version) every 10 seconds.
 
 ## Authentication and access
 

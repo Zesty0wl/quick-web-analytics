@@ -103,6 +103,15 @@ app.get("/oauth/authorize", async (c) => {
 app.route("/api", api);
 app.get("/_compat/*", (c) => c.text("Not found", 404));
 app.get("/_tracker/*", (c) => c.text("Not found", 404));
+// Vite's build output: file names carry a content hash, so browsers may keep them for good and never re-check.
+app.get("/assets/*", async (c) => {
+  const res = await c.env.ASSETS.fetch(c.req.raw);
+  // A missing file gets the SPA's index.html (not-found handling), which must never be cached for good.
+  if (res.status !== 200 || res.headers.get("content-type")?.includes("text/html")) return res;
+  const out = new Response(res.body, res);
+  out.headers.set("cache-control", "public, max-age=31536000, immutable");
+  return out;
+});
 // Everything else is the dashboard SPA.
 app.all("*", (c) => c.env.ASSETS.fetch(c.req.raw));
 

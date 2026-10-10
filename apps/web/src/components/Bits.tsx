@@ -106,17 +106,25 @@ export function UpdatedAgo({ at }: { at: number | undefined }) {
   return <>updated {s < 60 ? `${s}s` : `${Math.round(s / 60)}m`} ago</>;
 }
 
-/** True once the element has scrolled near the viewport (then stays true). */
-export function useInView<T extends Element>(margin = "400px"): [React.RefObject<T | null>, boolean] {
+/**
+ * `seen`: the element has scrolled near the viewport at least once (then stays true), so it can render.
+ * `near`: it's near the viewport now, so its queries may fetch and refresh. Scrolled away, they wait.
+ */
+export function useInView<T extends Element>(margin = "400px"): [React.RefObject<T | null>, boolean, boolean] {
   const ref = useRef<T>(null);
+  const [near, setNear] = useState(false);
   const [seen, setSeen] = useState(false);
   useEffect(() => {
-    if (seen || !ref.current) return;
-    const io = new IntersectionObserver((entries) => entries.some((e) => e.isIntersecting) && setSeen(true), { rootMargin: margin });
+    if (!ref.current) return;
+    const io = new IntersectionObserver((entries) => {
+      const on = entries.some((e) => e.isIntersecting);
+      setNear(on);
+      if (on) setSeen(true);
+    }, { rootMargin: margin });
     io.observe(ref.current);
     return () => io.disconnect();
-  }, [seen, margin]);
-  return [ref, seen];
+  }, [margin]);
+  return [ref, seen, near];
 }
 
 interface QueryLike { isFetching: boolean; isPlaceholderData?: boolean; data?: unknown }

@@ -47,7 +47,8 @@ export interface QuerySpec {
 
 export interface QueryResult {
   rows: Record<string, string | number | null>[];
-  meta: { from: string; to: string; timezone: string; ms: number; files: number };
+  /** `cached`: answered from the query worker's cache (same query, same data). */
+  meta: { from: string; to: string; timezone: string; ms: number; files: number; cached?: boolean };
 }
 
 /** Which metrics can be computed for a given grouping. */

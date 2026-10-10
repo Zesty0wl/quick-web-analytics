@@ -1,32 +1,20 @@
-import { useEffect, useMemo, useState } from "react";
+import { lazy, Suspense, useEffect, useMemo, useState } from "react";
 import { useMutation, useQueryClient } from "@tanstack/react-query";
 import type { Dimension, Filter, Metric, TimeGrain } from "@qwa/shared";
-import { api, useAlerts, useAnomalies, useRealtime, useStats, type Me, type Realtime } from "../api";
+import { api, useAlerts, useAnomalies, useRealtime, useStats, type Me, type Realtime, type SiteRef } from "../api";
+import { useLiveUpdates } from "../live";
 import { Busy, busyOf, Delta, MinuteBars, Spinner, UpdatedAgo, useInView } from "../components/Bits";
 import { ArrowLeft, Bell, BellOff, Close, External, Search } from "../components/Icons";
 import { LineChart, type ChartMark } from "../components/LineChart";
 import { SiteSwitcher } from "../components/SiteSwitcher";
 import { WorldMap } from "../components/WorldMap";
 import { Section, Seg } from "../components/Section";
-import { SearchSection, SpeedSection } from "./Google";
+// The Google sections sit well down the page: their code loads separately.
+const SearchSection = lazy(() => import("./Google").then((m) => ({ default: m.SearchSection })));
+const SpeedSection = lazy(() => import("./Google").then((m) => ({ default: m.SpeedSection })));
 import { addDays, comparisonRange, daysBetween, grainsFor, isWeekend, shortDate, weekday, type Compare } from "../dates";
 import { compact, describeAnomaly, DIMENSION_LABELS, displayValue, duration, liveUrl, metricValue, METRIC_LABELS, trackerState, whole } from "../format";
 import { globalParams, linkHandler, readSiteState, withParams, type Navigate, type SiteState } from "../url";
-
-export const SECTIONS = [
-  { id: "s-overview", label: "Overview" },
-  { id: "s-realtime", label: "Realtime" },
-  { id: "s-sources", label: "Sources" },
-  { id: "s-search", label: "Google Search" },
-  { id: "s-pages", label: "Pages" },
-  { id: "s-campaigns", label: "Campaigns" },
-  { id: "s-events", label: "Events" },
-  { id: "s-devices", label: "Devices" },
-  { id: "s-geo", label: "Geography" },
-  { id: "s-heatmap", label: "Heatmap" },
-  { id: "s-speed", label: "Speed" },
-  { id: "s-days", label: "Day by day" },
-];
 
 const TILES: Metric[] = ["visitors", "visits", "pageviews", "views_per_visit", "bounce_rate", "visit_duration", "time_on_page", "scroll_depth", "events"];
 const TILE_LABELS: Partial<Record<Metric, string>> = { visitors: "Unique visitors", visit_duration: "Avg. visit" };
@@ -43,6 +31,7 @@ const AUTO_EVENTS = new Set(["Outbound Link: Click", "File Download", "Form: Sub
 
 export interface Ctx {
   siteId: number;
+  site: SiteRef;
   domain: string;
   from: string;
   to: string;
@@ -55,8 +44,8 @@ type Row = Record<string, string | number | null>;
 
 /** A breakdown plus the same breakdown for the comparison period (for change columns). */
 function useBreakdown(c: Ctx, dim: Dimension, metrics: Metric[], opts: { limit?: number; enabled: boolean; compare?: boolean }) {
-  const cur = useStats(c.siteId, { from: c.from, to: c.to, metrics, groupBy: dim, filters: c.filters, limit: opts.limit ?? 10 }, opts.enabled);
-  const prev = useStats(c.siteId, { from: c.cmp.from, to: c.cmp.to, metrics: [metrics[0]], groupBy: dim, filters: c.filters, limit: 300 }, opts.enabled && !!opts.compare);
+  const cur = useStats(c.site, { from: c.from, to: c.to, metrics, groupBy: dim, filters: c.filters, limit: opts.limit ?? 10 }, { enabled: opts.enabled });
+  const prev = useStats(c.site, { from: c.cmp.from, to: c.cmp.to, metrics: [metrics[0]], groupBy: dim, filters: c.filters, limit: 300 }, { enabled: opts.enabled && !!opts.compare });
   const prevMap = useMemo(() => new Map((prev.data?.rows ?? []).map((r) => [String(r[dim] ?? ""), Number(r[metrics[0]] ?? 0)])), [prev.data, dim, metrics]);
   const rows = (cur.data?.rows ?? []) as Row[];
   // Old rows against a new comparison (or vice versa) would give wrong changes, so hide them until both are current.
@@ -87,12 +76,17 @@ function ChangeCell({ metric, cur, prev, stale }: { metric: Metric; cur: number;
   return <td className="num">{stale ? <span className="muted">…</span> : <Delta metric={metric} current={cur} previous={prev ?? 0} />}</td>;
 }
 
-/** Breakdown table with in-cell bars, filter on click, optional change column and a "show all" dialog. */
-function BreakdownTable({ c, dim, metrics, columns, mono, compare, limit = 10, enabled, empty, showAll = true, prefix }: {
+/**
+ * Breakdown table with in-cell bars, filter on click, optional change column and a "show all" dialog.
+ * `fetchLimit` asks for more rows than are shown, so the table can share another panel's query (e.g. the map's).
+ */
+function BreakdownTable({ c, dim, metrics, columns, mono, compare, limit = 10, fetchLimit, enabled, empty, showAll = true, prefix }: {
   c: Ctx; dim: Dimension; metrics: Metric[]; columns?: { label: string; render: (r: Row) => React.ReactNode }[]; mono?: boolean; compare?: boolean;
-  limit?: number; enabled: boolean; empty?: string; showAll?: boolean; prefix?: (value: string) => React.ReactNode;
+  limit?: number; fetchLimit?: number; enabled: boolean; empty?: string; showAll?: boolean; prefix?: (value: string) => React.ReactNode;
 }) {
-  const b = useBreakdown(c, dim, metrics, { limit, enabled, compare });
+  const all = useBreakdown(c, dim, metrics, { limit: fetchLimit ?? limit, enabled, compare });
+  const b = { ...all, rows: all.rows.slice(0, limit) };
+  const more = fetchLimit ? all.rows.length > limit : b.rows.length >= limit;
   const [open, setOpen] = useState(false);
   const max = Math.max(1, ...b.rows.map((r) => Number(r[metrics[0]] ?? 0)));
   const cols = columns ?? metrics.map((m) => ({ label: METRIC_LABELS[m], render: (r: Row) => metricValue(m, r[m] as number, { compact: true }) }));
@@ -125,7 +119,7 @@ function BreakdownTable({ c, dim, metrics, columns, mono, compare, limit = 10, e
       </div>
       {!b.busy && b.rows.length === 0 && <div className="empty">{empty ?? "No data for this period."}</div>}
       </Busy>
-      {showAll && b.rows.length >= limit && <button className="btn btn-ghost" style={{ marginTop: 8 }} onClick={() => setOpen(true)}>Show all</button>}
+      {showAll && more && <button className="btn btn-ghost" style={{ marginTop: 8 }} onClick={() => setOpen(true)}>Show all</button>}
       {open && <AllRows c={c} dim={dim} metrics={metrics} mono={mono} onClose={() => setOpen(false)} />}
     </div>
   );
@@ -137,7 +131,7 @@ function AllRows({ c, dim, metrics, mono, onClose }: { c: Ctx; dim: Dimension; m
   useEffect(() => { const t = setTimeout(() => setTerm(text.trim()), 250); return () => clearTimeout(t); }, [text]);
   useEffect(() => { const k = (e: KeyboardEvent) => e.key === "Escape" && onClose(); window.addEventListener("keydown", k); return () => window.removeEventListener("keydown", k); }, [onClose]);
   const filters: Filter[] = term ? [...c.filters, [dim, "contains", term]] : c.filters;
-  const q = useStats(c.siteId, { from: c.from, to: c.to, metrics, groupBy: dim, filters, limit: 300 });
+  const q = useStats(c.site, { from: c.from, to: c.to, metrics, groupBy: dim, filters, limit: 300 });
   const rows = (q.data?.rows ?? []) as Row[];
   const max = Math.max(1, ...rows.map((r) => Number(r[metrics[0]] ?? 0)));
   return (
@@ -203,14 +197,16 @@ function Detail({ admin, sites, site, state, url, navigate, dates, compare, peri
   const setFilters = (f: Filter[]) => set({ f: f.length ? JSON.stringify(f) : null });
   const addFilter = (f: Filter) => setFilters([...filters.filter((x) => x[0] !== f[0]), f]);
   const zoomTo = (a: string, b: string) => set({ range: null, from: a, to: b, g: null });
-  const c: Ctx = { siteId: site.id, domain: site.domain, from, to, cmp, filters, addFilter };
+  const ref = useMemo(() => ({ id: site.id, timezone: site.timezone }), [site.id, site.timezone]);
+  const c: Ctx = { siteId: site.id, site: ref, domain: site.domain, from, to, cmp, filters, addFilter };
 
   const seriesMetrics = ENGAGEMENT.includes(state.metric) ? [...SERIES, state.metric] : SERIES;
-  const totals = useStats(site.id, { from, to, metrics: TILES, filters });
-  const cmpTotals = useStats(site.id, { from: cmp.from, to: cmp.to, metrics: TILES, filters });
-  const series = useStats(site.id, { from, to, metrics: seriesMetrics, groupBy: grain, filters });
-  const cmpSeries = useStats(site.id, { from: cmp.from, to: cmp.to, metrics: seriesMetrics, groupBy: grain, filters });
-  const rt = useRealtime(site.id);
+  const totals = useStats(ref, { from, to, metrics: TILES, filters }, { freshness: "fast" });
+  const cmpTotals = useStats(ref, { from: cmp.from, to: cmp.to, metrics: TILES, filters });
+  const series = useStats(ref, { from, to, metrics: seriesMetrics, groupBy: grain, filters }, { freshness: "fast" });
+  const cmpSeries = useStats(ref, { from: cmp.from, to: cmp.to, metrics: seriesMetrics, groupBy: grain, filters });
+  const live = useLiveUpdates(ref);
+  const rt = useRealtime(site.id, live === "down");
   const anomalies = useAnomalies(site.id, from, to);
 
   const t = totals.data?.rows[0] ?? {};
@@ -327,7 +323,7 @@ function Detail({ admin, sites, site, state, url, navigate, dates, compare, peri
       </Busy>
 
       <section id="s-realtime" className="section">
-        <div className="section-head"><h3>Realtime</h3><span className="muted">Visitors active in the last 5 minutes · <UpdatedAgo at={rt.dataUpdatedAt} /></span></div>
+        <div className="section-head"><h3>Realtime</h3><span className="muted">Visitors active in the last 5 minutes · {live === "open" ? "live" : <UpdatedAgo at={rt.dataUpdatedAt} />}</span></div>
         <div className="rt-grid">
           <div className="wide">
             <WorldMap data={(rt.data?.countries ?? []).map((x) => ({ code: x.name, visitors: x.visitors }))} caption="Live visitors by country · last 30 minutes" onPick={(code) => addFilter(["country", "is", code])} />
@@ -343,14 +339,14 @@ function Detail({ admin, sites, site, state, url, navigate, dates, compare, peri
       </section>
 
       <SourcesSection c={c} />
-      <SearchSection c={c} />
+      <Suspense fallback={<div className="section placeholder" />}><SearchSection c={c} /></Suspense>
       <PagesSection c={c} />
       <CampaignsSection c={c} />
       <EventsSection c={c} />
       <DevicesSection c={c} />
       <GeoSection c={c} />
       <HeatmapSection c={c} />
-      <SpeedSection c={c} admin={admin} />
+      <Suspense fallback={<div className="section placeholder" />}><SpeedSection c={c} admin={admin} /></Suspense>
       {span > 1 && span <= 120 && <DaysSection c={c} onDay={(d) => zoomTo(d, d)} />}
     </div>
   );
@@ -406,8 +402,8 @@ function LiveList({ title, rows, accent, dim, c }: { title: string; rows: { name
 }
 
 function SourcesSection({ c }: { c: Ctx }) {
-  const [ref, seen] = useInView<HTMLElement>();
-  const ch = useBreakdown(c, "channel", ["visitors"], { limit: 20, enabled: seen, compare: true });
+  const [ref, seen, near] = useInView<HTMLElement>();
+  const ch = useBreakdown(c, "channel", ["visitors"], { limit: 20, enabled: near, compare: true });
   const [refDim, setRefDim] = useState<Dimension>("source");
   const total = ch.rows.reduce((n, r) => n + Number(r.visitors ?? 0), 0) || 1;
   return (
@@ -453,7 +449,7 @@ function SourcesSection({ c }: { c: Ctx }) {
                 metrics={["visitors", "bounce_rate"]}
                 columns={[{ label: "Visitors", render: (r) => compact(Number(r.visitors)) }, { label: "Bounce", render: (r) => `${Math.round(Number(r.bounce_rate))}%` }]}
                 compare
-                enabled
+                enabled={near}
               />
             </div>
           </div>
@@ -551,8 +547,8 @@ function DevicesSection({ c }: { c: Ctx }) {
 }
 
 function GeoSection({ c }: { c: Ctx }) {
-  const [ref, seen] = useInView<HTMLElement>();
-  const countries = useBreakdown(c, "country", ["visitors"], { limit: 300, enabled: seen });
+  const [ref, seen, near] = useInView<HTMLElement>();
+  const countries = useBreakdown(c, "country", ["visitors"], { limit: 300, enabled: near });
   return (
     <section id="s-geo" className="section" ref={ref}>
       <div className="section-head"><h3>Geography</h3><span className="muted">{countries.rows.length ? `${countries.rows.length} countries` : ""}</span></div>
@@ -562,10 +558,10 @@ function GeoSection({ c }: { c: Ctx }) {
             <WorldMap data={countries.rows.map((r) => ({ code: String(r.country ?? ""), visitors: Number(r.visitors ?? 0) }))} caption="Visitors by country · selected period" onPick={(code) => c.addFilter(["country", "is", code])} />
           </Busy>
           <div className="twocol">
-            <BreakdownTable c={c} dim="country" enabled compare metrics={["visitors"]} limit={12}
+            <BreakdownTable c={c} dim="country" enabled={near} compare metrics={["visitors"]} limit={12} fetchLimit={300}
               prefix={(v) => <span className="muted mono" style={{ fontSize: 12, width: 22, flex: "none" }}>{v || "–"}</span>}
               columns={[{ label: "Visitors", render: (r) => compact(Number(r.visitors)) }]} />
-            <BreakdownTable c={c} dim="city" enabled metrics={["visitors", "visit_duration"]} limit={12}
+            <BreakdownTable c={c} dim="city" enabled={near} metrics={["visitors", "visit_duration"]} limit={12}
               columns={[{ label: "Visitors", render: (r) => compact(Number(r.visitors)) }, { label: "Avg. visit", render: (r) => duration(Number(r.visit_duration)) }]} />
           </div>
         </>
@@ -582,8 +578,8 @@ function grainOf(rows: Row[]): TimeGrain | undefined {
 const DAYS = ["Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"];
 
 function HeatmapSection({ c }: { c: Ctx }) {
-  const [ref, seen] = useInView<HTMLElement>();
-  const q = useStats(c.siteId, { from: c.from, to: c.to, metrics: ["visitors"], groupBy: "weekhour", filters: c.filters }, seen);
+  const [ref, seen, near] = useInView<HTMLElement>();
+  const q = useStats(c.site, { from: c.from, to: c.to, metrics: ["visitors"], groupBy: "weekhour", filters: c.filters }, { enabled: near });
   // Average per occurrence of each weekday in the range.
   const occurrences = useMemo(() => {
     const n = new Array(7).fill(0);
@@ -634,8 +630,8 @@ function HeatmapSection({ c }: { c: Ctx }) {
 const DAY_METRICS: Metric[] = ["visitors", "visits", "pageviews", "bounce_rate", "visit_duration", "events"];
 
 function DaysSection({ c, onDay }: { c: Ctx; onDay: (d: string) => void }) {
-  const [ref, seen] = useInView<HTMLElement>();
-  const q = useStats(c.siteId, { from: addDays(c.from, -7), to: c.to, metrics: DAY_METRICS, groupBy: "day", filters: c.filters }, seen);
+  const [ref, seen, near] = useInView<HTMLElement>();
+  const q = useStats(c.site, { from: addDays(c.from, -7), to: c.to, metrics: DAY_METRICS, groupBy: "day", filters: c.filters }, { enabled: near });
   const days = useMemo(() => {
     const all = q.data?.rows ?? [];
     const by = new Map(all.map((r) => [String(r.day), r]));

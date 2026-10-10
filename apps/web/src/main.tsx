@@ -1,19 +1,40 @@
-import { StrictMode } from "react";
+import { lazy, StrictMode, Suspense, useEffect, useState } from "react";
 import { createRoot } from "react-dom/client";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { ApiError, useMe } from "./api";
 import { Spinner } from "./components/Bits";
 import { Header } from "./components/Header";
 import { SiteSwitcher } from "./components/SiteSwitcher";
-import { compareLabel, comparisonRange, periodLabel, presetRange } from "./dates";
-import { Account } from "./pages/Account";
-import { OAuthConsent } from "./pages/OAuthConsent";
-import { Admin } from "./pages/Admin";
+import { compareLabel, comparisonRange, periodLabel, presetRange, todayIn } from "./dates";
 import { Overview } from "./pages/Overview";
-import { SECTIONS, Site } from "./pages/Site";
+import { SECTIONS } from "./pages/sections";
 import { useAppearance } from "./theme";
 import { globalParams, linkHandler, readGlobal, readSiteState, useLocation, withParams } from "./url";
 import "./styles.css";
+
+// Pages other than the overview load their code when first opened.
+const Site = lazy(() => import("./pages/Site").then((m) => ({ default: m.Site })));
+const Admin = lazy(() => import("./pages/Admin").then((m) => ({ default: m.Admin })));
+const Account = lazy(() => import("./pages/Account").then((m) => ({ default: m.Account })));
+const OAuthConsent = lazy(() => import("./pages/OAuthConsent").then((m) => ({ default: m.OAuthConsent })));
+
+const loading = <div className="busy-block" style={{ minHeight: "60vh" }}><Spinner size={16} />Loading…</div>;
+
+/** Re-render when the date changes in `tz`, so "today" and "last 30 days" move on at midnight in an open tab. */
+function useToday(tz?: string): string {
+  const [today, setToday] = useState(() => todayIn(tz));
+  useEffect(() => {
+    const check = () => setToday(todayIn(tz));
+    check();
+    const t = setInterval(check, 30_000);
+    document.addEventListener("visibilitychange", check);
+    return () => {
+      clearInterval(t);
+      document.removeEventListener("visibilitychange", check);
+    };
+  }, [tz]);
+  return today;
+}
 
 const queryClient = new QueryClient({ defaultOptions: { queries: { refetchOnWindowFocus: false, retry: 1 } } });
 
@@ -22,7 +43,11 @@ function App() {
   const appearance = useAppearance();
   const me = useMe();
 
-  if (me.isLoading) return <div className="busy-block" style={{ minHeight: "60vh" }}><Spinner size={16} />Loading…</div>;
+  const siteState = readSiteState(url);
+  const site = siteState ? me.data?.sites.find((s) => s.id === siteState.siteId) : undefined;
+  useToday(site?.timezone);
+
+  if (me.isLoading) return loading;
   if (me.isError) {
     const e = me.error as ApiError;
     return (
@@ -37,11 +62,9 @@ function App() {
   }
   const data = me.data!;
   // The OAuth consent page stands alone: no dashboard header or date controls.
-  if (url.pathname === "/oauth/authorize") return <main><OAuthConsent me={data} /></main>;
+  if (url.pathname === "/oauth/authorize") return <main><Suspense fallback={loading}><OAuthConsent me={data} /></Suspense></main>;
   const isAdmin = data.user.role === "admin";
-  const siteState = readSiteState(url);
   const page = url.pathname.startsWith("/admin") && isAdmin ? "admin" : url.pathname.startsWith("/account") ? "account" : siteState ? "site" : "overview";
-  const site = siteState ? data.sites.find((s) => s.id === siteState.siteId) : undefined;
 
   const g = readGlobal(url);
   const { from, to } = g.range === "custom" ? { from: g.from!, to: g.to! } : presetRange(g.range, site?.timezone);
@@ -73,6 +96,7 @@ function App() {
         sections={page === "site" && site ? SECTIONS : undefined}
       />
       <main>
+        <Suspense fallback={loading}>
         {page === "account" ? (
           <Account me={data} />
         ) : page === "admin" ? (
@@ -82,6 +106,7 @@ function App() {
         ) : (
           <Overview me={data} url={url} navigate={navigate} dates={{ from, to, cfrom: cmp.from, cto: cmp.to }} periodText={periodText} cmpText={cmpText} />
         )}
+        </Suspense>
       </main>
     </>
   );

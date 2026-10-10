@@ -5,6 +5,7 @@ import { init, DuckDB } from "@ducklings/workers";
 import wasmModule from "@ducklings/workers/wasm/duckdb-workers.wasm";
 import { keyRange, TABLES, tablePrefix, type QueryResult, type QuerySpec, type TableName } from "@qwa/shared";
 import { buildSql } from "./sql";
+import { ResultCache } from "./cache";
 import { addDays, dayLabel, hourLabel, localMidnight, offsetSegments } from "./tz";
 
 interface Env {
@@ -22,18 +23,28 @@ let bucket: R2Bucket | undefined;
 const objects = new Map<string, { at: number; list: R2Object[] }>();
 const realFetch = globalThis.fetch.bind(globalThis);
 
-async function listPrefix(prefix: string): Promise<R2Object[]> {
+/** Listings in flight for one call, so its queries share them. Never shared across requests (see "No request ever…"). */
+type Listings = Map<string, Promise<R2Object[]>>;
+
+async function listPrefix(prefix: string, listing: Listings): Promise<R2Object[]> {
   const hit = objects.get(prefix);
   if (hit && Date.now() - hit.at < LIST_TTL_MS) return hit.list;
-  const out: R2Object[] = [];
-  let cursor: string | undefined;
-  do {
-    const page = await bucket!.list({ prefix, cursor });
-    out.push(...page.objects);
-    cursor = page.truncated ? page.cursor : undefined;
-  } while (cursor);
-  objects.set(prefix, { at: Date.now(), list: out });
-  return out;
+  let pending = listing.get(prefix);
+  if (!pending) {
+    pending = (async () => {
+      const out: R2Object[] = [];
+      let cursor: string | undefined;
+      do {
+        const page = await bucket!.list({ prefix, cursor });
+        out.push(...page.objects);
+        cursor = page.truncated ? page.cursor : undefined;
+      } while (cursor);
+      objects.set(prefix, { at: Date.now(), list: out });
+      return out;
+    })().finally(() => listing.delete(prefix));
+    listing.set(prefix, pending);
+  }
+  return pending;
 }
 
 function knownObject(key: string): R2Object | undefined {
@@ -165,8 +176,8 @@ async function exclusive<T>(fn: () => Promise<T>): Promise<T> {
   }
 }
 
-async function filesFor(siteId: number, table: TableName, from: number, to: number, live: { files: Record<string, ArrayBuffer | null>; token: string } | null): Promise<string[]> {
-  const list = await listPrefix(tablePrefix(siteId, table));
+async function filesFor(siteId: number, table: TableName, from: number, to: number, live: { files: Record<string, ArrayBuffer | null>; token: string } | null, listing: Listings): Promise<string[]> {
+  const list = await listPrefix(tablePrefix(siteId, table), listing);
   const fresh = live ? Object.entries(live.files).filter(([k]) => k.startsWith(tablePrefix(siteId, table))) : [];
   const replaced = new Set(fresh.map(([k]) => k));
   const liveUrls = fresh
@@ -196,27 +207,102 @@ async function filesFor(siteId: number, table: TableName, from: number, to: numb
 
 const num = (v: unknown) => (typeof v === "bigint" ? Number(v) : v);
 
+/**
+ * Fresh Parquet for days with events not yet flushed to R2, by R2 key (null = no rows that day), from the site's
+ * Durable Object, and a tag naming that exact content. Older callers send just the files.
+ */
+export type LiveFiles = { files: Record<string, ArrayBuffer | null>; tag: string };
+type Live = { files: Record<string, ArrayBuffer | null>; token: string; tag: string };
+
+function normaliseLive(live: LiveFiles | Record<string, ArrayBuffer | null> | undefined): LiveFiles | null {
+  if (!live) return null;
+  const l = "files" in live && "tag" in live && typeof live.tag === "string" ? (live as LiveFiles) : { files: live as Record<string, ArrayBuffer | null>, tag: "" };
+  return Object.keys(l.files).length ? l : null;
+}
+
+// Answers keyed by everything they depend on: the query, the timezone, every file read (R2 URLs carry the ETag) and the
+// live data's tag. New events or a rewritten file change the key, so a cached answer is never stale.
+const results = new ResultCache<QueryResult>({ maxEntries: 400, maxBytes: 8 * 1024 * 1024 });
+
+const encoder = new TextEncoder();
+
 export class QueryService extends WorkerEntrypoint<Env> {
   /**
    * Always let a query run to completion, even if the caller goes away (a closed tab cancels the request chain).
    * A query cut off mid-read leaves DuckDB's single WebAssembly module waiting forever and wedges the isolate.
+   * `live` replaces R2's copies of the days it covers, so a range covering today includes the last few minutes.
    */
-  /**
-   * `live`: fresh Parquet for days with events not yet flushed to R2, by R2 key (null = no rows that day), from the
-   * site's Durable Object. These replace R2's copies, so a range covering today includes the last few minutes.
-   */
-  async query(siteId: number, timezone: string, spec: QuerySpec, live?: Record<string, ArrayBuffer | null>): Promise<QueryResult> {
-    const token = live && Object.keys(live).length ? crypto.randomUUID() : null;
-    if (token) for (const [k, buf] of Object.entries(live!)) if (buf) liveBuffers.set(`${k}|${token}`, buf);
-    const run = this.run(siteId, timezone, spec, token ? { files: live!, token } : null);
-    const cleanup = run.catch(() => undefined).then(() => {
-      if (token) for (const k of Object.keys(live!)) liveBuffers.delete(`${k}|${token}`);
-    });
-    this.ctx.waitUntil(cleanup);
+  async query(siteId: number, timezone: string, spec: QuerySpec, live?: LiveFiles | Record<string, ArrayBuffer | null>): Promise<QueryResult> {
+    const l = this.register(normaliseLive(live));
+    const run = this.run(siteId, timezone, spec, l);
+    this.ctx.waitUntil(run.catch(() => undefined).then(() => this.release(l)));
     return run;
   }
 
-  private async run(siteId: number, timezone: string, spec: QuerySpec, live: { files: Record<string, ArrayBuffer | null>; token: string } | null): Promise<QueryResult> {
+  /**
+   * Several queries for one site, answered as NDJSON lines (`{"i":…,"result":…}` or `{"i":…,"error":…}`) as each is
+   * ready: cached answers first, then the rest in the order given.
+   */
+  async queryMany(siteId: number, timezone: string, items: { i: number; spec: QuerySpec }[], live?: LiveFiles): Promise<ReadableStream<Uint8Array>> {
+    const l = this.register(normaliseLive(live));
+    const { readable, writable } = new IdentityTransformStream();
+    const writer = writable.getWriter();
+    let gone = false;
+    const send = async (line: object) => {
+      if (gone) return;
+      try {
+        await writer.write(encoder.encode(`${JSON.stringify(line)}\n`));
+      } catch {
+        gone = true; // the caller went away: finish the query in hand, start no more
+      }
+    };
+    const work = (async () => {
+      try {
+        const listing: Listings = new Map();
+        const plans = await Promise.all(items.map(async (x) => ({ ...x, plan: await this.plan(siteId, timezone, x.spec, l, listing).catch((e: Error) => e) })));
+        const misses = [];
+        for (const p of plans) {
+          if (p.plan instanceof Error) await send({ i: p.i, error: p.plan.message });
+          else if (p.plan.cached) await send({ i: p.i, result: p.plan.cached });
+          else misses.push(p);
+        }
+        for (const p of misses) {
+          if (gone) break;
+          if (p.plan instanceof Error) continue;
+          try {
+            await send({ i: p.i, result: await this.execute(p.plan) });
+          } catch (e) {
+            await send({ i: p.i, error: `query failed: ${(e as Error).message}` });
+          }
+        }
+      } finally {
+        this.release(l);
+        if (!gone) await writer.close().catch(() => undefined);
+      }
+    })();
+    this.ctx.waitUntil(work.catch((e) => console.error("queryMany failed", e)));
+    return readable;
+  }
+
+  /** Make live buffers readable by this isolate's DuckDB for the duration of a call. */
+  private register(live: LiveFiles | null): Live | null {
+    if (!live) return null;
+    const token = crypto.randomUUID();
+    for (const [k, buf] of Object.entries(live.files)) if (buf) liveBuffers.set(`${k}|${token}`, buf);
+    return { ...live, token };
+  }
+
+  private release(live: Live | null) {
+    if (live) for (const k of Object.keys(live.files)) liveBuffers.delete(`${k}|${live.token}`);
+  }
+
+  private async run(siteId: number, timezone: string, spec: QuerySpec, live: Live | null): Promise<QueryResult> {
+    const plan = await this.plan(siteId, timezone, spec, live, new Map());
+    return plan.cached ?? this.execute(plan);
+  }
+
+  /** Work out which files a query reads and its SQL, and look for a cached answer. */
+  private async plan(siteId: number, timezone: string, spec: QuerySpec, live: Live | null, listing: Listings) {
     bucket = this.env.DATA;
     const started = Date.now();
     const from = localMidnight(timezone, spec.from);
@@ -225,10 +311,18 @@ export class QueryService extends WorkerEntrypoint<Env> {
     const segments = offsetSegments(timezone, from, to);
 
     const files = Object.fromEntries(
-      await Promise.all(TABLES.map(async (t) => [t, await filesFor(siteId, t, from - 86_400, to + 86_400, live)] as const)),
+      await Promise.all(TABLES.map(async (t) => [t, await filesFor(siteId, t, from - 86_400, to + 86_400, live, listing)] as const)),
     ) as Record<TableName, string[]>;
 
     const { sql, key } = buildSql({ spec, from, to, segments, files, approximate: days > APPROX_AFTER_DAYS });
+    // Live files' URLs carry a per-call token; the tag names their content. Without a tag (an older caller), no caching.
+    const cacheKey = live && !live.tag ? null : await ResultCache.key([siteId, timezone, spec, live ? sql.replaceAll(live.token, live.tag) : sql]);
+    const hit = cacheKey ? results.get(cacheKey) : undefined;
+    const cached = hit ? { ...hit, meta: { ...hit.meta, ms: Date.now() - started, cached: true } } : null;
+    return { siteId, spec, sql, key, cacheKey, started, timezone, files, cached };
+  }
+
+  private async execute({ spec, sql, key, cacheKey, started, timezone, files }: Awaited<ReturnType<QueryService["plan"]>>): Promise<QueryResult> {
     const raw = await exclusive(async () => (await duck(this.env)).query(sql));
 
     let rows = raw.map((r) => Object.fromEntries(Object.entries(r).map(([k, v]) => [k, num(v)]))) as Record<string, string | number | null>[];
@@ -238,10 +332,12 @@ export class QueryService extends WorkerEntrypoint<Env> {
       rows = rows.map((r) => ({ ...r, [key]: dayLabel(Number(r[key])) }));
       rows = fillPeriods(rows, spec, key);
     }
-    return {
+    const result: QueryResult = {
       rows,
       meta: { from: spec.from, to: spec.to, timezone, ms: Date.now() - started, files: Object.values(files).reduce((n, f) => n + f.length, 0) },
     };
+    if (cacheKey) results.set(cacheKey, result);
+    return result;
   }
 }
 

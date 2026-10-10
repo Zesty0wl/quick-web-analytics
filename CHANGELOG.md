@@ -7,6 +7,11 @@ All notable changes to Quick Web Analytics. Dates are UTC. Database changes ship
 
 ### Added
 
+- **The dashboard updates itself.** You never need to reload to see new data.
+  - **Pushed live:** a site's page keeps a WebSocket open to that site's Durable Object, which pushes the realtime panel at most every 2 seconds while events arrive. Hibernation means an idle connection costs nothing, and the page asks for a fresh snapshot after 25 quiet seconds so "visitors now" falls when traffic stops.
+  - **Reports follow:** each push carries a data version. Reports that include today refresh when it moves on, the headline numbers and chart within about 10 seconds and the sections within 30, and only while they're on screen. Past ranges never refetch.
+  - **Hidden tabs:** the connection closes while the tab is hidden and catches up when you return. If it can't connect, the page polls every 10 seconds instead.
+  - **Midnight:** "Today", "Last 7 days" and the other presets move on at midnight in the site's timezone in a tab left open.
 - **Google Search section** on each site's page, from Search Console:
   - clicks, impressions, click-through rate and average position, with change against the comparison period and a daily chart
   - top queries, pages, countries and devices; click a query to see which pages Google showed for it
@@ -57,6 +62,16 @@ All notable changes to Quick Web Analytics. Dates are UTC. Database changes ship
 - **Realtime layout:** the visitors-per-minute bars fill the space beside the live lists, and live list rows inset their text like table rows.
 - **Tracker badges reflect the last 48 hours** instead of 14 days. "QWA + Plausible" becomes "QWA tracker" two days after the last event from the old Plausible script. While a few still arrive (e.g. from cached pages), the site card and Admin → Sites say when the last one came.
 - **Tracker badge on each site's page** (admins): next to the timezone, it shows whether events are arriving through the QWA tracker, the Plausible script, or both, with the same 48-hour rule and "last seen" tooltip as the site cards.
+- **Faster, cheaper report loading:**
+  - **Batched queries:** a site's page sends its reports' queries together, one request per moment rather than one per report (about 26 requests became 7). The server checks sign-in once, fetches the Durable Object's live data once, and streams each answer back as soon as it's ready.
+  - **Cached answers:** the query Worker keeps answers in memory, keyed by the query and every file it reads (R2 ETags and a tag for the live data). An answer is reused until the data behind it changes, and never served stale. The browser also keeps answers for past ranges for good.
+  - **Fewer D1 round trips:** signed-in users and their site grants are cached for 30 seconds per Worker isolate, and the "last seen" write no longer holds up the response. Changes to users apply at once in the isolate that made them and within 30 seconds elsewhere.
+  - **Shared map data:** the Geography country table reuses the map's query.
+- **Smaller, faster dashboard:**
+  - **Code splitting:** the first page load fetches about 96 KB gzipped instead of 169 KB. The site page, Admin, Account and the Google sections load their code when first opened.
+  - **Precomputed map:** the world map's shapes are projected at build time (`npm run map -w apps/web`) instead of in the browser on every load.
+  - **Asset caching:** hashed assets are served `immutable`, so browsers never re-check them.
+- **The overview and Admin poll less.** The overview's D1 reads run in parallel, and closed days' totals are reused for 5 minutes, so each 30-second poll only asks the sites for today. Admin → Sites checks every site every 30 seconds instead of 15, and catches up when you switch back to the tab.
 - The top bar and section bar line up with the page's content column on wide screens.
 - The accent colour picker moved from the top bar to the Admin page.
 - PageSpeed tests are spread over 02:10–07:10 UTC, six sites per hour, so no single run is long. A failed test is retried once, and one strategy failing no longer loses the other.
@@ -65,6 +80,7 @@ All notable changes to Quick Web Analytics. Dates are UTC. Database changes ship
 
 - **Add the Scheduler to `apps/worker/wrangler.jsonc`** (see `wrangler.example.jsonc`). Add `{ "name": "SCHEDULER", "class_name": "Scheduler" }` to `durable_objects.bindings`, add `{ "tag": "v2", "new_sqlite_classes": ["Scheduler"] }` to `migrations`, and remove `"10 * * * *"` from `triggers.crons`.
 - Apply migrations `0007_google` (adds `sites.gsc_property` and the `speed_runs` table), `0008_settings` (credentials saved from the dashboard), `0009_api_tokens` and `0010_oauth`.
+- **Live updates need nothing new in Cloudflare.** The WebSocket (`/api/sites/<id>/live`) is a dashboard path, behind the same Access application. Deploy both Workers together with `npm run deploy`, which deploys the query Worker first.
 - **Deploy both Workers** (`npm run deploy`): the query Worker reads the new Web Vitals columns. Older Parquet files keep working as they are.
 - **Add `<hostname>/mcp`, `/.well-known/oauth-protected-resource`, `/.well-known/oauth-protected-resource/mcp`, `/.well-known/oauth-authorization-server`, `/oauth/register` and `/oauth/token` to the public-paths (bypass) Access application,** and the `MCP_LIMITER` rate-limit binding from `wrangler.example.jsonc`.
 
