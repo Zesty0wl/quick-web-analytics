@@ -44,11 +44,31 @@ function knownObject(key: string): R2Object | undefined {
   return undefined;
 }
 
+// Live day files handed over by the caller for one query (the site's not-yet-flushed events), by "<key>|<token>".
+const liveBuffers = new Map<string, ArrayBuffer>();
+
+function serveBuffer(buf: ArrayBuffer, method: string, init?: RequestInit): Response {
+  if (method === "HEAD") return new Response(null, { headers: { "content-length": String(buf.byteLength), "accept-ranges": "bytes" } });
+  const m = new Headers(init?.headers).get("range")?.match(/bytes=(\d+)-(\d+)?/);
+  const start = m ? +m[1] : 0;
+  const end = Math.min(m?.[2] ? +m[2] : buf.byteLength - 1, buf.byteLength - 1);
+  const part = buf.slice(start, end + 1);
+  return new Response(part, {
+    status: m ? 206 : 200,
+    headers: { "content-length": String(part.byteLength), "content-range": `bytes ${start}-${start + part.byteLength - 1}/${buf.byteLength}`, "accept-ranges": "bytes" },
+  });
+}
+
 globalThis.fetch = (async (input: RequestInfo | URL, init?: RequestInit) => {
   const url = new URL(typeof input === "string" ? input : input instanceof URL ? input.href : input.url);
   if (url.hostname !== FAKE_HOST || !bucket) return realFetch(input as RequestInfo, init);
   const key = decodeURIComponent(url.pathname.slice(1));
   const method = (init?.method ?? "GET").toUpperCase();
+  const live = url.searchParams.get("live");
+  if (live) {
+    const buf = liveBuffers.get(`${key}|${live}`);
+    return buf ? serveBuffer(buf, method, init) : new Response(null, { status: 404 });
+  }
   const meta = knownObject(key) ?? (await bucket.head(key)) ?? undefined;
   if (!meta) return new Response(null, { status: 404 });
   if (method === "HEAD") {
@@ -145,8 +165,16 @@ async function exclusive<T>(fn: () => Promise<T>): Promise<T> {
   }
 }
 
-async function filesFor(siteId: number, table: TableName, from: number, to: number): Promise<string[]> {
+async function filesFor(siteId: number, table: TableName, from: number, to: number, live: { files: Record<string, ArrayBuffer | null>; token: string } | null): Promise<string[]> {
   const list = await listPrefix(tablePrefix(siteId, table));
+  const fresh = live ? Object.entries(live.files).filter(([k]) => k.startsWith(tablePrefix(siteId, table))) : [];
+  const replaced = new Set(fresh.map(([k]) => k));
+  const liveUrls = fresh
+    .filter(([k, buf]) => {
+      const r = keyRange(k);
+      return buf && r !== null && r[0] < to && r[1] > from;
+    })
+    .map(([k]) => `https://${FAKE_HOST}/${k}?live=${live!.token}`);
   // Day files already folded into their month file (uploaded before it) would double count.
   const monthUploaded = new Map<string, number>();
   for (const o of list) {
@@ -159,10 +187,11 @@ async function filesFor(siteId: number, table: TableName, from: number, to: numb
       if (r === null || r[0] >= to || r[1] <= from || o.size === 0) return false;
       const day = o.key.match(/\/day\/(\d{4}-\d{2})-\d{2}\.parquet$/);
       const merged = day ? monthUploaded.get(day[1]) : undefined;
-      return merged === undefined || o.uploaded.getTime() > merged;
+      return (merged === undefined || o.uploaded.getTime() > merged) && !replaced.has(o.key);
     })
     // The version in the URL means a rewritten file (e.g. today's) is never read from a stale cache.
-    .map((o) => `https://${FAKE_HOST}/${o.key}?v=${encodeURIComponent(o.etag)}`);
+    .map((o) => `https://${FAKE_HOST}/${o.key}?v=${encodeURIComponent(o.etag)}`)
+    .concat(liveUrls);
 }
 
 const num = (v: unknown) => (typeof v === "bigint" ? Number(v) : v);
@@ -172,13 +201,22 @@ export class QueryService extends WorkerEntrypoint<Env> {
    * Always let a query run to completion, even if the caller goes away (a closed tab cancels the request chain).
    * A query cut off mid-read leaves DuckDB's single WebAssembly module waiting forever and wedges the isolate.
    */
-  async query(siteId: number, timezone: string, spec: QuerySpec): Promise<QueryResult> {
-    const run = this.run(siteId, timezone, spec);
-    this.ctx.waitUntil(run.catch(() => undefined));
+  /**
+   * `live`: fresh Parquet for days with events not yet flushed to R2, by R2 key (null = no rows that day), from the
+   * site's Durable Object. These replace R2's copies, so a range covering today includes the last few minutes.
+   */
+  async query(siteId: number, timezone: string, spec: QuerySpec, live?: Record<string, ArrayBuffer | null>): Promise<QueryResult> {
+    const token = live && Object.keys(live).length ? crypto.randomUUID() : null;
+    if (token) for (const [k, buf] of Object.entries(live!)) if (buf) liveBuffers.set(`${k}|${token}`, buf);
+    const run = this.run(siteId, timezone, spec, token ? { files: live!, token } : null);
+    const cleanup = run.catch(() => undefined).then(() => {
+      if (token) for (const k of Object.keys(live!)) liveBuffers.delete(`${k}|${token}`);
+    });
+    this.ctx.waitUntil(cleanup);
     return run;
   }
 
-  private async run(siteId: number, timezone: string, spec: QuerySpec): Promise<QueryResult> {
+  private async run(siteId: number, timezone: string, spec: QuerySpec, live: { files: Record<string, ArrayBuffer | null>; token: string } | null): Promise<QueryResult> {
     bucket = this.env.DATA;
     const started = Date.now();
     const from = localMidnight(timezone, spec.from);
@@ -187,7 +225,7 @@ export class QueryService extends WorkerEntrypoint<Env> {
     const segments = offsetSegments(timezone, from, to);
 
     const files = Object.fromEntries(
-      await Promise.all(TABLES.map(async (t) => [t, await filesFor(siteId, t, from - 86_400, to + 86_400)] as const)),
+      await Promise.all(TABLES.map(async (t) => [t, await filesFor(siteId, t, from - 86_400, to + 86_400, live)] as const)),
     ) as Record<TableName, string[]>;
 
     const { sql, key } = buildSql({ spec, from, to, segments, files, approximate: days > APPROX_AFTER_DAYS });

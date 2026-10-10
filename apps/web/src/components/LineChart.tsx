@@ -46,7 +46,9 @@ export function LineChart({ keys, current, compareKeys, compare, metric, grain, 
   const [hover, setHover] = useState<number | null>(null);
   const n = keys.length;
   const hasCmp = !!compare && compare.length > 0;
-  const max = useMemo(() => niceMax(Math.max(0, ...current, ...(hasCmp ? compare! : []))), [current, compare, hasCmp]);
+  // Scale to what's drawn: the comparison is only drawn as far as the current period goes (e.g. yesterday's evening
+  // isn't shown against this morning), so its later values mustn't stretch the axis.
+  const max = useMemo(() => niceMax(Math.max(0, ...current, ...(hasCmp ? compare!.slice(0, n) : []))), [current, compare, hasCmp, n]);
   const x = (i: number) => (n <= 1 ? W / 2 : (i / (n - 1)) * W);
   const y = (v: number) => H - (v / max) * H;
   const path = (vals: number[]) => vals.slice(0, n).map((v, i) => `${i ? "L" : "M"}${x(i).toFixed(1)},${y(v).toFixed(1)}`).join("");

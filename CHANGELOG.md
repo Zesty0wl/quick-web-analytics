@@ -52,6 +52,9 @@ All notable changes to Quick Web Analytics. Dates are UTC. Database changes ship
 - **The hourly check also catches bursts:** 4× the usual for the last three hours, at least 200 extra visits, and the same strength threshold.
   - Until now it only compared the day so far, which dilutes a sharp rise. On issinfo.net, a pass of the ISS sent Melbourne's searchers to the site and produced 10.7× the usual visits in three hours. The day as a whole was only 2.9×.
   - Tested against 30 days of all 22 sites, it adds about one alert a month.
+- **"Today" is live everywhere.** Site pages, breakdowns and agent tools include events from the last few minutes, not only what's been written to storage, which happens every 5 minutes. For ranges reaching today, the site's Durable Object hands the query Worker fresh copies of its not-yet-written day files, rebuilt at most every 5 seconds, which replace the stored copies for that query.
+- **Line charts scale to what's drawn.** With a partial "today", the comparison line is only drawn as far as today goes, and its later values (e.g. a busy evening yesterday) no longer stretch the axis.
+- **Realtime layout:** the visitors-per-minute bars fill the space beside the live lists, and live list rows inset their text like table rows.
 - **Tracker badges reflect the last 48 hours** instead of 14 days. "QWA + Plausible" becomes "QWA tracker" two days after the last event from the old Plausible script. While a few still arrive (e.g. from cached pages), the site card and Admin → Sites say when the last one came.
 - The top bar and section bar line up with the page's content column on wide screens.
 - The accent colour picker moved from the top bar to the Admin page.

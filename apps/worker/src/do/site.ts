@@ -11,6 +11,8 @@ import { randomId, utcDay } from "../ingest/visitor";
 const SESSION_TIMEOUT_S = 30 * 60;
 const FLUSH_INTERVAL_MS = 5 * 60 * 1000;
 const LOCAL_RETENTION_S = 3 * 86_400;
+/** How often live day files for queries may be rebuilt (per day), while events keep arriving. */
+const LIVE_REBUILD_MS = 5_000;
 /** Web Vitals columns on the local events table (engagement events), matching the engagement Parquet columns. */
 const VITAL_EVENT_COLUMNS: [keyof Vitals, "INTEGER" | "TEXT"][] = [
   ["pv", "INTEGER"], ["inp", "INTEGER"], ["inp_target", "TEXT"], ["inp_type", "TEXT"], ["inp_delay", "INTEGER"], ["inp_processing", "INTEGER"],
@@ -26,6 +28,7 @@ export class SiteDO extends DurableObject<Env> {
   private sql: SqlStorage;
   // Kept in memory and written once per flush, so each event costs as few SQLite row writes as possible.
   private dirtyVersion = new Map<string, number>(); // UTC day → events since the last flush
+  private liveCache = new Map<string, { version: number; at: number; files: Record<string, ArrayBuffer | null> }>();
   /** Last event time per front door ("qwa" | "plausible"), kept in memory and loaded once per wake. */
   private lastSeen: Map<string, number> | null = null;
   private persistedDirty = new Set<string>(); // days with a dirty:<day> marker in storage (survives eviction)
@@ -228,6 +231,31 @@ export class SiteDO extends DurableObject<Env> {
   async alarm(): Promise<void> {
     await this.flush();
     if (this.persistedDirty.size > 0) await this.ctx.storage.setAlarm(Date.now() + FLUSH_INTERVAL_MS);
+  }
+
+  /**
+   * Fresh Parquet for every day with changes not yet flushed to R2, keyed by R2 key (null = the table has no rows that
+   * day, so any R2 copy is stale). The query worker reads these instead of R2's copies, so queries covering today
+   * include events from the last few minutes. Rebuilt at most every few seconds per day, and only if something changed.
+   */
+  async liveFiles(): Promise<Record<string, ArrayBuffer | null>> {
+    const siteId = Number(this.meta("site_id"));
+    if (!siteId) return {};
+    const out: Record<string, ArrayBuffer | null> = {};
+    for (const day of this.persistedDirty) {
+      const version = this.dirtyVersion.get(day) ?? 0;
+      let hit = this.liveCache.get(day);
+      if (!hit || (hit.version !== version && Date.now() - hit.at > LIVE_REBUILD_MS)) {
+        const start = Date.parse(`${day}T00:00:00Z`) / 1000;
+        const files: Record<string, ArrayBuffer | null> = {};
+        for (const table of TABLES) files[dayKey(siteId, table, day)] = this.buildDay(table, start, start + 86_400);
+        hit = { version, at: Date.now(), files };
+        this.liveCache.set(day, hit);
+      }
+      Object.assign(out, hit.files);
+    }
+    for (const day of this.liveCache.keys()) if (!this.persistedDirty.has(day)) this.liveCache.delete(day);
+    return out;
   }
 
   /** Rewrite the Parquet files for every day that changed since the last flush. */

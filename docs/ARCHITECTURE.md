@@ -63,6 +63,8 @@ tables: sessions · pageviews · engagement · custom
   - Compaction streams one row group at a time and is idempotent.
   - While a merge is in progress, the query side ignores day files already folded into a month file, so nothing is counted twice.
 
+Queries whose range reaches today ask the site's Durable Object for its not-yet-flushed day files (`liveFiles()`, rebuilt at most every 5 seconds). The query Worker reads those in place of R2's copies, so "today" is live in every report, not up to 5 minutes behind.
+
 Parquet is small: roughly 20 bytes per event, so a site with 4.5 million events of history takes about 80 MB. R2 storage costs and limits are effectively irrelevant.
 
 ## Queries

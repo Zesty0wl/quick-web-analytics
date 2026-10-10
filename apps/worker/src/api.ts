@@ -138,8 +138,16 @@ api.post("/sites/:site/query", async (c) => {
   } catch (e) {
     return c.json({ error: (e as Error).message }, 400);
   }
+  // Ranges reaching today (or yesterday, just after midnight) include events the site hasn't flushed to R2 yet.
+  let live: Record<string, ArrayBuffer | null> | undefined;
+  if (spec.to >= addDays(todayIn(site.timezone), -1)) {
+    live = await c.env.SITE.get(c.env.SITE.idFromName(String(site.id))).liveFiles().catch((e) => {
+      console.warn("live files unavailable", site.domain, e);
+      return undefined;
+    });
+  }
   try {
-    return c.json(await c.env.QUERY.query(site.id, site.timezone, spec));
+    return c.json(await c.env.QUERY.query(site.id, site.timezone, spec, live));
   } catch (e) {
     console.error("query failed", e);
     return c.json({ error: `query failed: ${(e as Error).message}` }, 502);

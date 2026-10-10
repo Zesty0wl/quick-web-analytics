@@ -330,7 +330,8 @@ function Detail({ admin, sites, site, state, url, navigate, dates, compare, peri
         <div className="rt-grid">
           <div className="wide">
             <WorldMap data={(rt.data?.countries ?? []).map((x) => ({ code: x.name, visitors: x.visitors }))} caption="Live visitors by country · last 30 minutes" onPick={(code) => addFilter(["country", "is", code])} />
-            <MinuteBars values={rt.data?.perMinute ?? new Array(30).fill(0)} height={64} />
+            {/* Fills whatever height the column has left beside the live lists. */}
+            <MinuteBars values={rt.data?.perMinute ?? new Array(30).fill(0)} fill minHeight={64} />
             <div className="axis-row"><span>Visitors per minute · 30 min ago</span><span>now</span></div>
           </div>
           <div style={{ display: "flex", flexDirection: "column", gap: "var(--space-6)", minWidth: 0 }}>
@@ -387,7 +388,7 @@ function LiveList({ title, rows, accent, dim, c }: { title: string; rows: { name
       <h6 style={{ marginBottom: "var(--space-2)" }}>{title}</h6>
       {rows.length === 0 && <div className="muted" style={{ fontSize: 13, padding: "6px 0" }}>Nobody right now</div>}
       {rows.map((r) => (
-        <div key={r.name} className="barrow clickable" style={{ fontSize: 13, padding: "6px 0" }} onClick={() => c.addFilter([dim, "is", r.name])}>
+        <div key={r.name} className="barrow clickable" style={{ fontSize: 13, paddingTop: 6, paddingBottom: 6 }} onClick={() => c.addFilter([dim, "is", r.name])}>
           <div className={accent ? "fill accent" : "fill"} style={{ top: 3, bottom: 3, width: `${(r.val / max) * 100}%` }} />
           <span style={{ display: "flex", gap: 6, alignItems: "center" }}><span style={{ overflow: "hidden", textOverflow: "ellipsis" }}>{displayValue(dim, r.name)}</span><OpenLink dim={dim} value={r.name} domain={c.domain} /></span>
           <span className="v">{r.val}</span>
