@@ -1,4 +1,4 @@
-import { useMemo, useState } from "react";
+import { lazy, Suspense, useMemo, useState } from "react";
 import type { Metric } from "@qwa/shared";
 import { useOverview, type DayStats, type Me, type OverviewSite } from "../api";
 import { Busy, busyOf, Delta, deltaInfo, MinuteBars, Spark, Spinner, UpdatedAgo } from "../components/Bits";
@@ -6,6 +6,11 @@ import { Alarm, External, Search } from "../components/Icons";
 import { addDays, todayIn } from "../dates";
 import { ANOMALY_LABEL, change, compact, describeAnomaly, duration, whole, trackerState } from "../format";
 import { globalParams, withParams, type Navigate } from "../url";
+
+// The drill-down behind each totals card loads its code when first opened.
+const Drill = lazy(() => import("./Drill").then((m) => ({ default: m.Drill })));
+const DRILLS = ["visitors", "pageviews", "visit_duration", "bounce_rate", "events"] as const;
+type DrillMetric = (typeof DRILLS)[number];
 
 type Sort = "visitors" | "growth" | "decline" | "live" | "name";
 type View = "cards" | "tiles" | "table";
@@ -35,6 +40,9 @@ export function Overview({ me, url, navigate, dates, periodText, cmpText }: {
   const isAdmin = me.user.role === "admin";
   const setParam = (k: string, v: string, def: string) => navigate(withParams(url, { [k]: v === def ? null : v }), { replace: true });
   const open = (id: number) => navigate(`/s/${id}${globalParams(url)}`);
+  const k = url.searchParams.get("k");
+  const drill = DRILLS.includes(k as DrillMetric) ? (k as DrillMetric) : null;
+  const setDrill = (m: DrillMetric | null) => navigate(withParams(url, { k: m }), { replace: true, keepScroll: true });
 
   const rows: Row[] = useMemo(
     () => (q.data?.sites ?? []).map((site) => {
@@ -114,7 +122,7 @@ export function Overview({ me, url, navigate, dates, periodText, cmpText }: {
   if (q.isError) return <div className="center error">{(q.error as Error).message}</div>;
 
   type Day = Omit<DayStats, "day">;
-  const kpis: { label: string; metric: Metric; cur: number; prev: number; fmt: (n: number) => string; perDay: (d: Day) => number; rate?: boolean }[] = [
+  const kpis: { label: string; metric: DrillMetric; cur: number; prev: number; fmt: (n: number) => string; perDay: (d: Day) => number; rate?: boolean }[] = [
     { label: "Visitors", metric: "visitors", cur: all.cur.visitors, prev: all.prev.visitors, fmt: whole, perDay: (d) => d.visitors },
     { label: "Pageviews", metric: "pageviews", cur: all.cur.pageviews, prev: all.prev.pageviews, fmt: whole, perDay: (d) => d.pageviews },
     { label: "Avg. visit", metric: "visit_duration", cur: all.cur.duration, prev: all.prev.duration, fmt: duration, perDay: (d) => (d.visits ? d.duration_sum / d.visits : NaN), rate: true },
@@ -135,7 +143,13 @@ export function Overview({ me, url, navigate, dates, periodText, cmpText }: {
         <Busy busy={busyOf(q)} className="kpi-strip-wrap">
           <div className="kpi-strip">
             {kpis.map((k) => (
-              <div key={k.label} className="cell kpi-mini" title={`${k.label}: ${k.fmt(k.cur)}, from ${k.fmt(k.prev)}`}>
+              <button
+                key={k.label}
+                className={drill === k.metric ? "cell-btn kpi-mini metric-tile on" : "cell-btn kpi-mini"}
+                aria-pressed={drill === k.metric}
+                onClick={() => setDrill(drill === k.metric ? null : k.metric)}
+                title={`${k.label}: ${k.fmt(k.cur)}, from ${k.fmt(k.prev)}. Click for the detail across all sites.`}
+              >
                 <div className="kpi-label">{k.label}</div>
                 <div className="kpi-value">{k.fmt(k.cur)}</div>
                 <div className="kpi-delta"><Delta metric={k.metric} current={k.cur} previous={k.prev} /></div>
@@ -144,11 +158,17 @@ export function Overview({ me, url, navigate, dates, periodText, cmpText }: {
                     <Spark current={daily.cur.map(k.perDay)} comparison={daily.prev.map(k.perDay)} growing={deltaInfo(k.metric, k.cur, k.prev)?.cls !== "delta bad"} height={26} fit={k.rate} />
                   </div>
                 )}
-              </div>
+              </button>
             ))}
           </div>
         </Busy>
       </header>
+
+      {drill && (
+        <Suspense fallback={<div className="cell drill placeholder" />}>
+          <Drill metric={drill} sites={rows.map((r) => r.site)} dates={dates} periodText={periodText} cmpText={cmpText} url={url} navigate={navigate} onClose={() => setDrill(null)} />
+        </Suspense>
+      )}
 
       <Busy busy={busyOf(q)}>
       <section className="cells live-grid" style={{ marginBottom: "var(--space-8)" }}>

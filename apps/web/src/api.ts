@@ -1,5 +1,5 @@
 import { useQuery, useQueryClient, type Query } from "@tanstack/react-query";
-import type { Filter, GroupBy, Metric, QueryResult } from "@qwa/shared";
+import type { Dimension, Filter, GroupBy, Metric, QueryResult } from "@qwa/shared";
 import { addDays, todayIn } from "./dates";
 
 export interface Me {
@@ -241,6 +241,46 @@ export const useOverview = (r: { from: string; to: string; cfrom: string; cto: s
     staleTime: 10_000,
     placeholderData: (prev) => prev,
   });
+
+// ---------- One breakdown across all sites (the overview's drill-down) ----------
+
+export interface CrossQuery {
+  from: string;
+  to: string;
+  cfrom: string;
+  cto: string;
+  metrics: Metric[];
+  groupBy: Dimension;
+  filters?: Filter[];
+  limit?: number;
+}
+export interface CrossRow {
+  site: number;
+  key: string;
+  values: Record<string, number>;
+  /** The first metric in the comparison period. */
+  previous: number;
+}
+export interface CrossBreakdown {
+  rows: CrossRow[];
+  /** Sites with more rows than the per-site limit (only their top rows are here). */
+  truncated: number[];
+  failed: string[];
+  limit: number;
+}
+
+export function useCrossBreakdown(q: CrossQuery, enabled: boolean) {
+  // Reaching today somewhere in the world: refresh now and then. Otherwise the answer never changes.
+  const live = q.to >= addDays(todayIn("UTC"), -1);
+  return useQuery({
+    queryKey: ["breakdown", q],
+    queryFn: () => api<CrossBreakdown>("/breakdown", { method: "POST", body: JSON.stringify(q) }),
+    enabled,
+    staleTime: live ? 30_000 : Infinity,
+    refetchInterval: live ? 60_000 : false,
+    placeholderData: (prev) => prev,
+  });
+}
 
 export function useAnomalies(siteId: number, from: string, to: string) {
   return useQuery({

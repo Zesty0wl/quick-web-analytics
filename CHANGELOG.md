@@ -7,6 +7,11 @@ All notable changes to Quick Web Analytics. Dates are UTC. Database changes ship
 
 ### Added
 
+- **Drill into the overview's totals.** Click any card at the top of the overview (Visitors, Pageviews, Avg. visit, Bounce rate, Events) to see what's behind it across all sites:
+  - **Chart:** a full-size chart of that metric against the comparison period. Click a day (or week, on long ranges) to narrow everything below to it, compared with the matching day before.
+  - **Tables:** by site with a trend line each, and by what explains the metric: events by name, pages, sources, countries or entry pages. Every column sorts. Search, pick a site, or combine the same event, source or country across sites. Counts list the biggest movers first, in the direction the total moved.
+  - **Navigation:** a row opens that site already filtered to it, and the panel's address (`?k=events`) can be shared.
+  - **API:** a new endpoint, `POST /api/breakdown`, answers one breakdown across all your sites in one call.
 - **The dashboard updates itself.** You never need to reload to see new data.
   - **Pushed live:** a site's page keeps a WebSocket open to that site's Durable Object, which pushes the realtime panel at most every 2 seconds while events arrive. Hibernation means an idle connection costs nothing, and the page asks for a fresh snapshot after 25 quiet seconds so "visitors now" falls when traffic stops.
   - **Reports follow:** each push carries a data version. Reports that include today refresh when it moves on, the headline numbers and chart within about 10 seconds and the sections within 30, and only while they're on screen. Past ranges never refetch.

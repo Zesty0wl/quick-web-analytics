@@ -497,6 +497,24 @@ details[open] summary { margin-bottom: 8px; }
 @media (max-width: 1100px) { .kpi-strip-wrap { flex-basis: 100%; max-width: none; } }
 @media (max-width: 900px) { .live-grid { grid-template-columns: minmax(0, 1fr); } }
 @media (max-width: 560px) { .kpi-strip { grid-template-columns: repeat(2, minmax(0, 1fr)); } }
+
+/* Overview drill-down: the totals cards open a panel with the detail across all sites */
+.kpi-mini.cell-btn { display: block; text-align: left; }
+.drill { position: relative; margin-bottom: var(--space-8); padding: var(--space-6) !important; }
+.drill-head { display: flex; align-items: flex-start; gap: var(--space-4); flex-wrap: wrap; padding-right: 48px; }
+.drill-close { position: absolute; top: var(--space-4); right: var(--space-4); }
+@media (max-width: 560px) { .drill { padding: var(--space-4) !important; } }
+.drill-head > div:first-child { margin-right: auto; }
+.drill-total { display: flex; align-items: baseline; gap: 10px; flex-wrap: wrap; }
+.drill-total .kpi-value { font-size: 28px; font-weight: 800; }
+.drill-bar { display: flex; align-items: center; gap: var(--space-3); flex-wrap: wrap; margin: var(--space-4) 0 var(--space-2); }
+.drill-tools { display: flex; align-items: center; gap: var(--space-3); flex-wrap: wrap; margin-top: var(--space-2); }
+.drill-tools select { max-width: 260px; }
+.check { display: inline-flex; align-items: center; gap: 6px; font-size: 13px; cursor: pointer; }
+button.fchip { background: none; color: inherit; font: inherit; font-size: 13px; padding: 0; cursor: pointer; }
+.th-sort { all: unset; cursor: pointer; }
+.th-sort:hover { color: var(--color-text); }
+.th-sort:focus-visible { outline: 2px solid var(--color-accent); outline-offset: 2px; }
 [data-look="cards"] .mb-tip { border-radius: 10px; }
 
 /* ---------- Google: Search Console and speed ---------- */

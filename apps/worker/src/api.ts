@@ -1,5 +1,6 @@
 import { Hono } from "hono";
-import { validateSpec, type QuerySpec } from "@qwa/shared";
+import { DIMENSIONS, validateSpec, type Dimension, type QuerySpec } from "@qwa/shared";
+import { joinRows, type BreakdownRow } from "./breakdown";
 import { AuthError, canViewSite, currentUser, forgetUsers, visibleSiteIds, type User } from "./auth";
 import type { Env, Site } from "./env";
 import { forViewer } from "./realtime";
@@ -157,6 +158,48 @@ async function liveFor(env: Env, site: Site, specs: QuerySpec[]): Promise<LiveFi
     return undefined;
   });
 }
+
+/**
+ * One breakdown across all the sites the user can see (or `sites`, a subset): each site's top rows for the period and
+ * the first metric's value in the comparison period. Powers the overview's drill-down from its totals cards.
+ */
+api.post("/breakdown", async (c) => {
+  const user = c.get("user");
+  const body = await c.req.json<{ from?: string; to?: string; cfrom?: string; cto?: string; metrics?: unknown; groupBy?: unknown; filters?: unknown; limit?: unknown; sites?: unknown }>().catch(() => null);
+  if (!body) return c.json({ error: "expected a JSON body" }, 400);
+  if (!DIMENSIONS.includes(body.groupBy as Dimension)) return c.json({ error: "groupBy must be a dimension" }, 400);
+  const dim = body.groupBy as Dimension;
+  const limit = Math.min(Math.max(Number(body.limit) || 100, 1), 300);
+  let cur: QuerySpec, prev: QuerySpec;
+  try {
+    cur = validateSpec({ from: body.from, to: body.to, metrics: body.metrics, groupBy: dim, filters: body.filters, limit });
+    prev = validateSpec({ from: body.cfrom, to: body.cto, metrics: [cur.metrics[0]], groupBy: dim, filters: body.filters, limit: 300 });
+  } catch (e) {
+    return c.json({ error: (e as Error).message }, 400);
+  }
+  if (addDays(cur.from, 800) < cur.to || addDays(prev.from, 800) < prev.to) return c.json({ error: "range too long" }, 400);
+  const visible = await visibleSiteIds(c.env, user);
+  const wanted = Array.isArray(body.sites) ? new Set(body.sites.map(Number)) : null;
+  const sites = (await allSites(c.env)).filter((s) => (visible === "all" || visible.includes(s.id)) && (!wanted || wanted.has(s.id)));
+
+  const rows: BreakdownRow[] = [];
+  const failed: string[] = [];
+  const truncated: number[] = [];
+  await Promise.all(
+    sites.map(async (site) => {
+      try {
+        const live = await liveFor(c.env, site, [cur, prev]);
+        const [a, b] = await Promise.all([c.env.QUERY.query(site.id, site.timezone, cur, live), c.env.QUERY.query(site.id, site.timezone, prev, live)]);
+        rows.push(...joinRows(site.id, dim, cur.metrics, a, b));
+        if (a.rows.length >= limit) truncated.push(site.id);
+      } catch (e) {
+        console.error("breakdown failed", site.domain, e);
+        failed.push(site.domain);
+      }
+    }),
+  );
+  return c.json({ rows, truncated, failed, limit });
+});
 
 api.post("/sites/:site/query", async (c) => {
   const site = await siteGuard(c);
