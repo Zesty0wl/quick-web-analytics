@@ -36,7 +36,13 @@ export interface AlertDetail {
    * Set for the hourly check: `value`/`expected` are visits from midnight to `hour`:00 ("today") or in the three
    * hours before it ("last3h"); `history` is that same window on earlier same weekdays.
    */
-  intraday?: { hour: number; window: "today" | "last3h"; history: number[] };
+  intraday?: {
+    hour: number;
+    window: "today" | "last3h";
+    history: number[];
+    /** Visits per local hour: today's hours so far, and the usual (median) for each of the 24 hours on this weekday. */
+    hours?: { today: number[]; usual: number[] };
+  };
 }
 
 const hh = (h: number) => `${String(((h % 24) + 24) % 24).padStart(2, "0")}:00`;
@@ -163,6 +169,33 @@ function barChart(a: AlertDetail): string {
 &nbsp;&nbsp;<span style="display:inline-block;width:9px;height:9px;border-radius:2px;background:${C.bar};vertical-align:middle"></span>&nbsp;Other days</div>`;
 }
 
+const swatch = (color: string) => `<span style="display:inline-block;width:9px;height:9px;border-radius:2px;background:${color};vertical-align:middle"></span>`;
+
+/** Hourly alerts: today's visits hour by hour beside a usual day's, with the hours that set off the alert picked out. */
+function hourChart(a: AlertDetail): string {
+  const i = a.intraday!;
+  const { today, usual } = i.hours!;
+  const flagged = (h: number) => h < i.hour && (i.window === "today" || h >= i.hour - 3);
+  const max = Math.max(1, ...today, ...usual);
+  const bar = (v: number, color: string, title: string) => {
+    const h = v > 0 ? Math.max(2, Math.round((v / max) * 84)) : 0;
+    return `<td valign="bottom" width="50%" style="padding:0;vertical-align:bottom" title="${esc(title)}">${h ? `<div style="height:${h}px;line-height:${h}px;font-size:1px;background:${color};border-radius:2px 2px 0 0">&nbsp;</div>` : ""}</td>`;
+  };
+  const cells = Array.from({ length: 24 }, (_, h) => {
+    const t = h < i.hour ? today[h] ?? 0 : 0;
+    const label = `${hh(h)}–${hh(h + 1)}`;
+    return `<td valign="bottom" style="padding:0 2px;height:88px;vertical-align:bottom"><table role="presentation" width="100%" cellpadding="0" cellspacing="0" style="border-collapse:collapse;table-layout:fixed;height:88px"><tr>
+${bar(t, flagged(h) ? C.accent : C.barSame, `Today ${label}: ${n(t)} visits`)}${bar(usual[h] ?? 0, C.bar, `Usual ${weekday(a.day)} ${label}: ${n(usual[h] ?? 0)} visits`)}
+</tr></table></td>`;
+  }).join("");
+  const axis = [0, 6, 12, 18].map((h) => `<td colspan="6" style="font-size:11px;color:${C.faint};padding-top:6px">${hh(h)}</td>`).join("");
+  const windowLabel = i.window === "today" ? `Today to ${hh(i.hour)}` : `Today ${hh(i.hour - 3)}–${hh(i.hour)}`;
+  return `<table role="presentation" width="100%" cellpadding="0" cellspacing="0" style="border-collapse:collapse;table-layout:fixed"><tr>${cells}</tr><tr>${axis}</tr></table>
+<div style="font-size:11px;color:${C.muted};margin-top:8px">
+${swatch(C.accent)}&nbsp;${esc(windowLabel)}${i.window === "last3h" ? `&nbsp;&nbsp;${swatch(C.barSame)}&nbsp;Earlier today` : ""}
+&nbsp;&nbsp;${swatch(C.bar)}&nbsp;Usual ${esc(weekday(a.day))} (median of ${i.history.length})</div>`;
+}
+
 function statCell(label: string, value: string, note: string, color = C.ink) {
   return `<td valign="top" style="padding:14px 16px;background:#faf9f8;border-radius:10px">
 <div style="font-size:11px;letter-spacing:.07em;text-transform:uppercase;color:${C.muted}">${esc(label)}</div>
@@ -222,8 +255,13 @@ ${statCell(usualLabel, `~${n(a.expected)}`, `median of ${i ? i.history.length : 
 ${statCell("Change", changeValue, a.kind === "spike" ? "above usual" : "below usual", a.kind === "spike" ? C.ink : C.neg)}
 </tr></table></td></tr>
 <tr><td style="padding:22px 28px 0">
-<div style="font-size:11px;letter-spacing:.07em;text-transform:uppercase;color:${C.muted};margin-bottom:10px">Visitors, last 4 weeks${i ? " (today so far)" : ""}</div>
-${barChart(a)}
+${
+  i?.hours
+    ? `<div style="font-size:11px;letter-spacing:.07em;text-transform:uppercase;color:${C.muted};margin-bottom:10px">Visits by hour, today vs a usual ${esc(weekday(a.day))}</div>
+${hourChart(a)}`
+    : `<div style="font-size:11px;letter-spacing:.07em;text-transform:uppercase;color:${C.muted};margin-bottom:10px">Visitors, last 4 weeks${i ? " (today so far)" : ""}</div>
+${barChart(a)}`
+}
 ${baselineList ? `<div style="font-size:12px;color:${C.muted};margin-top:12px;line-height:1.5">Previous ${esc(weekday(a.day))}s${i ? (i.window === "today" ? ` by ${hh(i.hour)}` : `, ${hh(i.hour - 3)}–${hh(i.hour)}`) : ""}: ${esc(baselineList)}</div>` : ""}
 </td></tr>
 ${i ? "" : `<tr><td style="padding:20px 28px 0">
@@ -257,6 +295,17 @@ ${button(dayLink, `Open ${shortDay(a.day)}`, true)}&nbsp;&nbsp;${button(monthLin
 </td></tr>`;
 }
 
+const SPOTTED_NIGHTLY =
+  "Each night, every site's visitors are compared with the same weekday over the previous six weeks. A day is flagged when it's far outside that range: at least twice the usual (a spike), half or less (a drop), or close to zero on a normally busy site (a possible outage). A run of unusual days is reported once.";
+const SPOTTED_HOURLY =
+  "Every hour, each site's visits so far today, and in the last three hours, are compared with the same hours on the same weekday over the previous six weeks. An alert is sent when the day so far is far above or below its usual, when the last three hours bring several times the usual visits (a burst), or when a normally busy stretch goes almost silent (a possible outage). Each site sends at most one of these a day.";
+
+/** The explanation(s) that fit the alerts in this email. */
+const howSpotted = (items: AlertDetail[]) => [
+  ...(items.some((a) => !a.intraday) ? [SPOTTED_NIGHTLY] : []),
+  ...(items.some((a) => a.intraday) ? [SPOTTED_HOURLY] : []),
+];
+
 export function renderAlertEmail(opts: { appHost?: string; items: AlertDetail[]; test?: boolean }): { subject: string; text: string; html: string } {
   const base = opts.appHost ? `https://${opts.appHost}` : "";
   const items = opts.items;
@@ -285,7 +334,9 @@ ${items.length > 1 ? `<div style="font-size:22px;font-weight:800;margin-top:6px;
 ${items.map((a) => anomalySection(a, base)).join(divider)}
 </table></td></tr>
 <tr><td style="padding:18px 14px 0;font-size:12px;line-height:1.6;color:${C.muted}">
-<b style="color:${C.ink}">How this was spotted.</b> Each night, every site's visitors are compared with the same weekday over the previous six weeks. A day is flagged when it's far outside that range: at least twice the usual (a spike), half or less (a drop), or close to zero on a normally busy site (a possible outage). A run of unusual days is reported once.<br><br>
+${howSpotted(items)
+  .map((t) => `<b style="color:${C.ink}">How this was spotted.</b> ${t}<br><br>`)
+  .join("")}
 You're getting this because alerts are on for ${esc([...new Set(items.map((a) => a.domain))].join(", "))}. Change which sites in ${base ? `<a href="${esc(base)}/admin" style="color:${C.muted}">Admin → Alerts</a>` : "Admin → Alerts"}, or with the <b>Alerts</b> bell on a site's page.
 </td></tr>
 </table></td></tr></table></body></html>`;
@@ -305,16 +356,20 @@ You're getting this because alerts are on for ${esc([...new Set(items.map((a) =>
         : [];
       return [
         `${KIND[a.kind].label.toUpperCase()}: ${a.domain}, ${longDay(a.day)}`,
-        `  Visitors: ${n(a.value)} (usual ${weekday(a.day)} ~${n(a.expected)}): ${changeText(a)}`,
+        a.intraday
+          ? `  Visits ${windowText(a.intraday)}: ${n(a.value)} (usual ~${n(a.expected)}): ${changeText(a)}`
+          : `  Visitors: ${n(a.value)} (usual ${weekday(a.day)} ~${n(a.expected)}): ${changeText(a)}`,
         ...m.map((x) => `  ${x.label}: ${x.value} (usual ${x.usual}) ${x.delta}`),
-        a.baseline.length ? `  Previous ${weekday(a.day)}s: ${a.baseline.map((b) => n(b.visitors)).join(", ")}` : "",
+        a.intraday
+          ? `  Previous ${weekday(a.day)}s, ${a.intraday.window === "today" ? `by ${hh(a.intraday.hour)}` : `${hh(a.intraday.hour - 3)}–${hh(a.intraday.hour)}`}: ${a.intraday.history.map((v) => n(v)).join(", ")}`
+          : a.baseline.length ? `  Previous ${weekday(a.day)}s: ${a.baseline.map((b) => n(b.visitors)).join(", ")}` : "",
         ...(movers.length ? ["  Where the change came from:", ...movers] : []),
         a.kind === "outage" ? "  Check the tracking snippet is still installed (Admin > Sites > Install > Check installation)." : "",
         `  Open the day: ${base}/s/${a.siteId}?from=${a.day}&to=${a.day}`,
         "",
       ].filter(Boolean);
     }),
-    "How this was spotted: each site's visitors are compared with the same weekday over the previous six weeks.",
+    ...howSpotted(items).map((t) => `How this was spotted: ${t}`),
     "Change which sites send alerts in Admin > Alerts, or with the Alerts bell on a site's page.",
   ].join("\n");
 

@@ -59,4 +59,28 @@ describe("hourly (so far today) alerts", () => {
     expect(subjectFor([o])).toBe("⚠ example.com: no visits since 11:00 (usually ~96). Is the tracker still working?");
     expect(renderAlertEmail({ items: [o] }).html).toContain("Visits 11:00–14:00");
   });
+
+  it("charts a burst hour by hour against a usual day, picking out the hours that set it off", () => {
+    const usual = [9, 6, 4, 3, 3, 5, 12, 30, 45, 50, 52, 55, 60, 58, 55, 52, 50, 48, 45, 40, 35, 25, 18, 12];
+    const today = [10, 7, 5, 3, 4, 6, 14, 150, 210, 273];
+    const b = { ...a, value: 633, expected: 136, intraday: { hour: 10, window: "last3h" as const, history: [92, 407, 166, 131, 117, 141], hours: { today, usual } } };
+    const { html, text } = renderAlertEmail({ items: [b] });
+    expect(html).toContain("Visits by hour, today vs a usual Friday");
+    expect(html).not.toContain("Visitors, last 4 weeks");
+    // 07:00–10:00 in the accent colour, earlier hours not; every hour has its usual bar.
+    expect(html.match(/title="Today (\d\d:00)–\d\d:00: [\d,]+ visits"><div style="[^"]*background:#ec3013/g)?.map((m) => m.slice(13, 18))).toEqual(["07:00", "08:00", "09:00"]);
+    expect(html.match(/title="Usual Friday/g)).toHaveLength(24);
+    expect(html).toContain("Today 07:00–10:00");
+    expect(html).toContain("Every hour, each site's visits so far today");
+    expect(html).not.toContain("Each night");
+    expect(text).toContain("Visits 07:00–10:00: 633 (usual ~136)");
+    expect(text).toContain("Previous Fridays, 07:00–10:00: 92, 407, 166, 131, 117, 141");
+  });
+
+  it("keeps the four-week chart for the nightly check", () => {
+    const { html } = renderAlertEmail({ items: [sampleAlert("2026-10-09")] });
+    expect(html).toContain("Visitors, last 4 weeks");
+    expect(html).toContain("Each night");
+    expect(html).not.toContain("Every hour");
+  });
 });

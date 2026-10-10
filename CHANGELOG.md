@@ -54,6 +54,7 @@ All notable changes to Quick Web Analytics. Dates are UTC. Database changes ship
   - The hourly cron added in 0.2.0 never fired on our production account, while the nightly crons on the same Worker ran normally.
   - The new `Scheduler` Durable Object books its next run each time it runs, and the Worker re-arms it if it ever stops.
   - Admin → Alerts shows when the hourly check last ran.
+- **Hourly alert emails chart the hours that matter.** Instead of four weeks of daily totals, where a partial "today" looked small, they show today's visits hour by hour beside a usual day for that weekday, with the hours that set off the alert in red. Their "How this was spotted" note now describes the hourly check, not the nightly one.
 - **The hourly check also catches bursts:** 4× the usual for the last three hours, at least 200 extra visits, and the same strength threshold.
   - Until now it only compared the day so far, which dilutes a sharp rise. On issinfo.net, a pass of the ISS sent Melbourne's searchers to the site and produced 10.7× the usual visits in three hours. The day as a whole was only 2.9×.
   - Tested against 30 days of all 22 sites, it adds about one alert a month.

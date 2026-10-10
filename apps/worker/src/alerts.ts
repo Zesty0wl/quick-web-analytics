@@ -226,11 +226,13 @@ export async function checkIntraday(env: Env, site: Site, opts: { send?: boolean
 
   const hourly = await intradayBaseline(env, site, day);
   const history = hourly.map((h) => ({ today: sumHours(h, 0, hour), last3h: sumHours(h, hour - 3, hour) }));
+  // The day so far, the last three hours, and each hour so far (for the email's chart).
   const live = await env.SITE.get(env.SITE.idFromName(String(site.id))).overview([
     { day, start: midnight, end: midnight + hour * 3600 },
     { day: "last3h", start: midnight + (hour - 3) * 3600, end: midnight + hour * 3600 },
+    ...Array.from({ length: hour }, (_, h) => ({ day: `h${h}`, start: midnight + h * 3600, end: midnight + (h + 1) * 3600 })),
   ]);
-  const [sofar, recent] = live.days;
+  const [sofar, recent, ...byHour] = live.days;
   const found = detectIntraday({ today: sofar.visits, last3h: recent.visits, history, hour });
   if (!found) return 0;
   // A run of unusual days is one event: stay quiet if this site had the same kind of anomaly in the last 2 days.
@@ -253,7 +255,12 @@ export async function checkIntraday(env: Env, site: Site, opts: { send?: boolean
   const base = await alertDetail(env, site, { day, kind: found.kind, value: found.value, expected: found.expected }, { fraction });
   const item: AlertDetail = {
     ...base,
-    intraday: { hour, window: found.window, history: history.map((h) => (found.window === "today" ? h.today : h.last3h)) },
+    intraday: {
+      hour,
+      window: found.window,
+      history: history.map((h) => (found.window === "today" ? h.today : h.last3h)),
+      hours: { today: byHour.map((d) => d.visits), usual: Array.from({ length: 24 }, (_, h) => medianOf(hourly.map((w) => w[h] ?? 0))) },
+    },
     // Today's bar: visitors so far (daily totals only cover closed days).
     history: base.history.map((d) => (d.day === day ? { day, visitors: sofar.visitors, visits: sofar.visits, pageviews: sofar.pageviews, bounces: sofar.bounces, duration_sum: sofar.duration_sum } : d)),
   };
