@@ -184,7 +184,7 @@ export function Site({ me, url, navigate, dates, compare, periodText, cmpText }:
     );
   }
   const unusual = url.pathname.match(/^\/s\/\d+\/unusual\/(\d{4}-\d{2}-\d{2})$/);
-  if (unusual) return <Unusual site={site} day={unusual[1]} url={url} navigate={navigate} />;
+  if (unusual) return <Unusual site={site} day={unusual[1]} url={url} navigate={navigate} period={dates} periodText={periodText} />;
   return <Detail key={site.id} admin={me.user.role === "admin"} sites={me.sites} site={site} state={state} url={url} navigate={navigate} dates={dates} compare={compare} periodText={periodText} cmpText={cmpText} />;
 }
 
@@ -223,14 +223,22 @@ function Detail({ admin, sites, site, state, url, navigate, dates, compare, peri
   const dataGrain = grainOf(rows) ?? grain;
   const keys = rows.map((r) => String(r[dataGrain]));
   const cmpRows = grainOf(cmpSeries.data?.rows ?? []) === dataGrain ? cmpSeries.data!.rows : [];
-  // Anomalies (daily) placed on whichever bucket contains their day; none on the hourly view.
+  // Anomalies placed on whichever bucket contains their day. On the hourly and 15-minute views, an hourly alert sits
+  // on the last bucket of the hours it flagged, and a nightly (whole-day) one on that day's last bucket shown.
   const marks: ChartMark[] = useMemo(() => {
-    if (dataGrain === "hour" || dataGrain === "quarter_hour") return [];
+    const subDay = dataGrain === "hour" || dataGrain === "quarter_hour";
+    const hh = (h: number) => String(h).padStart(2, "0");
     return (anomalies.data?.anomalies ?? []).flatMap((a) => {
-      const index = keys.findIndex((k, i) =>
-        dataGrain === "day" ? k === a.day : dataGrain === "week" ? k <= a.day && a.day < (keys[i + 1] ?? addDays(k, 7)) : k.slice(0, 7) === a.day.slice(0, 7),
-      );
-      return index < 0 ? [] : [{ index, kind: a.kind, day: a.day, rank: Math.abs(a.score ?? 0), text: dataGrain === "day" ? describeAnomaly(a) : `${weekday(a.day)} ${shortDate(a.day)}: ${describeAnomaly(a)}` }];
+      let index: number;
+      if (subDay) {
+        const end = a.metric === "intraday" && a.detail ? `${a.day} ${hh(a.detail.hour - 1)}:${dataGrain === "hour" ? "00" : "45"}` : `${a.day} 23:59`;
+        index = keys.reduce((found, k, i) => (k.slice(0, 10) === a.day && k <= end ? i : found), -1);
+      } else {
+        index = keys.findIndex((k, i) =>
+          dataGrain === "day" ? k === a.day : dataGrain === "week" ? k <= a.day && a.day < (keys[i + 1] ?? addDays(k, 7)) : k.slice(0, 7) === a.day.slice(0, 7),
+        );
+      }
+      return index < 0 ? [] : [{ index, kind: a.kind, day: a.day, rank: Math.abs(a.score ?? 0), text: dataGrain === "day" || subDay ? describeAnomaly(a) : `${weekday(a.day)} ${shortDate(a.day)}: ${describeAnomaly(a)}` }];
     });
   }, [anomalies.data, keys, dataGrain]);
   const chartBusy = (!!totals.data && busyOf(totals, cmpTotals)) || (rows.length > 0 && busyOf(series, cmpSeries));

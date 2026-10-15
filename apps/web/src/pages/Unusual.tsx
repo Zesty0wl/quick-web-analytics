@@ -2,7 +2,7 @@
 import { useAnomalies, useAnomalyExplained, type Anomaly, type DayFigures, type Me, type Mover } from "../api";
 import { Spinner } from "../components/Bits";
 import { Alarm, ArrowLeft } from "../components/Icons";
-import { longDate, shortDate, weekday } from "../dates";
+import { longDate, shortDate, weekday, type Period } from "../dates";
 import { ANOMALY_LABEL, describeAnomaly, duration, whole } from "../format";
 import { globalParams, linkHandler, withParams, type Navigate } from "../url";
 
@@ -10,8 +10,12 @@ const hh = (h: number) => `${String(((h % 24) + 24) % 24).padStart(2, "0")}:00`;
 const pct = (a: number, b: number) => (b ? `${a >= b ? "+" : "−"}${Math.abs(Math.round(((a - b) / b) * 100))}%` : "–");
 const sum = (list: DayFigures[], k: keyof Omit<DayFigures, "day">) => list.reduce((n, d) => n + d[k], 0);
 
-export function Unusual({ site, day, url, navigate }: { site: Me["sites"][number]; day: string; url: URL; navigate: Navigate }) {
+export function Unusual({ site, day, url, navigate, period, periodText }: {
+  site: Me["sites"][number]; day: string; url: URL; navigate: Navigate; period: Period; periodText: string;
+}) {
   const q = useAnomalyExplained(site.id, day);
+  // Every unusual day in the selected range, to step between them.
+  const inRange = useAnomalies(site.id, period.from, period.to);
   // Other unusual days in the four weeks shown, so they're marked on the chart and one click away.
   const first = q.data?.detail.history[0]?.day;
   const around = useAnomalies(site.id, first ?? day, day);
@@ -82,6 +86,8 @@ export function Unusual({ site, day, url, navigate }: { site: Me["sites"][number
         </div>
         <a className="btn btn-secondary" href={dayHref()} onClick={linkHandler(navigate, dayHref())}>Open this day in the dashboard</a>
       </header>
+
+      <UnusualDays list={inRange.data?.anomalies ?? []} day={a.day} periodText={periodText} onPick={openDay} />
 
       <div className="cells tiles-row" style={{ gridTemplateColumns: "repeat(auto-fit, minmax(min(100%, 180px), 1fr))" }}>
         <div className="cell"><span className="kpi-label">{valueLabel}</span><div className="kpi-value" style={up ? undefined : { color: "var(--neg)" }}>{whole(a.value)}</div><span className="muted" style={{ fontSize: 13 }}>{i ? `${weekday(a.day)}, to ${hh(i.hour)}` : shortDate(a.day)}</span></div>
@@ -154,6 +160,36 @@ export function Unusual({ site, day, url, navigate }: { site: Me["sites"][number
         </section>
       )}
     </div>
+  );
+}
+
+/** The selected range's unusual days, newest first, the one shown highlighted: one click to step between them. */
+function UnusualDays({ list, day, periodText, onPick }: { list: Anomaly[]; day: string; periodText: string; onPick: (day: string) => void }) {
+  // One per day (the nightly and the hourly check can both flag a day): the more unusual.
+  const byDay = new Map<string, Anomaly>();
+  for (const a of list) if (Math.abs(a.score ?? 0) >= Math.abs(byDay.get(a.day)?.score ?? -1)) byDay.set(a.day, a);
+  const days = [...byDay.values()].sort((a, b) => b.day.localeCompare(a.day));
+  if (days.length < 2 && days[0]?.day === day) return null;
+  const label = { spike: "Spike", drop: "Drop", outage: "Outage?" } as const;
+  return (
+    <nav className="unusual-days" aria-label="Unusual days in this range">
+      <span className="kpi-label">{days.length} unusual day{days.length === 1 ? "" : "s"} · {periodText}</span>
+      <div className="unusual-days-list">
+        {days.map((a) => (
+          <button
+            key={a.day}
+            type="button"
+            className={`anomaly-flag ${a.kind}${a.day === day ? " current" : ""}`}
+            aria-current={a.day === day ? "page" : undefined}
+            onClick={() => a.day !== day && onPick(a.day)}
+            title={describeAnomaly(a)}
+          >
+            <Alarm size={11} />{label[a.kind]} · {weekday(a.day)} {shortDate(a.day)}
+          </button>
+        ))}
+        {!byDay.has(day) && <span className="hint">The day shown is outside this range.</span>}
+      </div>
+    </nav>
   );
 }
 

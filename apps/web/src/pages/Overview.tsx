@@ -40,6 +40,7 @@ export function Overview({ me, url, navigate, dates, periodText, cmpText }: {
   const isAdmin = me.user.role === "admin";
   const setParam = (k: string, v: string, def: string) => navigate(withParams(url, { [k]: v === def ? null : v }), { replace: true });
   const open = (id: number) => navigate(`/s/${id}${globalParams(url)}`);
+  const openUnusual = (id: number, day: string) => navigate(`/s/${id}/unusual/${day}${globalParams(url)}`);
   const k = url.searchParams.get("k");
   const drill = DRILLS.includes(k as DrillMetric) ? (k as DrillMetric) : null;
   const setDrill = (m: DrillMetric | null) => navigate(withParams(url, { k: m }), { replace: true, keepScroll: true });
@@ -227,7 +228,7 @@ export function Overview({ me, url, navigate, dates, periodText, cmpText }: {
 
       {view === "cards" && (
         <div className="cells site-grid">
-          {shown.map((r) => <SiteCard key={r.site.id} r={r} isAdmin={isAdmin} onOpen={() => open(r.site.id)} />)}
+          {shown.map((r) => <SiteCard key={r.site.id} r={r} isAdmin={isAdmin} onOpen={() => open(r.site.id)} onAnomaly={(day) => openUnusual(r.site.id, day)} />)}
         </div>
       )}
 
@@ -275,7 +276,7 @@ export function Overview({ me, url, navigate, dates, periodText, cmpText }: {
                     <div style={{ fontWeight: 700, display: "flex", alignItems: "center", gap: 6 }}>
                       {r.site.domain}
                       <a className="open" href={`https://${r.site.domain}`} target="_blank" rel="noopener noreferrer" onClick={(e) => e.stopPropagation()} title={`Open ${r.site.domain}`}><External /></a>
-                      <AnomalyFlag site={r.site} />
+                      <AnomalyFlag site={r.site} onOpen={(day) => openUnusual(r.site.id, day)} />
                     </div>
                   </td>
                   {isAdmin && <td><TrackerTag site={r.site} /></td>}
@@ -330,16 +331,28 @@ function SiteSpark({ r, height = 52, width }: { r: Row; height?: number; width?:
   return <Spark current={cur} comparison={r.site.comparison.map((d) => d.visitors)} growing={r.growth >= 0} height={height} width={width} />;
 }
 
-/** The most recent unusual day in the last week, as a small flag. */
-function AnomalyFlag({ site }: { site: OverviewSite }) {
-  const since = addDays(todayIn(site.timezone), -7);
-  const a = [...(site.anomalies ?? [])].reverse().find((x) => x.day >= since);
+/** The most recent unusual day in the last week, as a small flag that opens the explanation of that day. */
+function AnomalyFlag({ site, onOpen }: { site: OverviewSite; onOpen: (day: string) => void }) {
+  // The selected range's unusual days (the overview only sends those), latest first; a day the nightly and the hourly
+  // check both flagged counts once.
+  const list = site.anomalies ?? [];
+  const a = list[list.length - 1];
   if (!a) return null;
-  const label = { spike: "Spike", drop: "Drop", outage: "Outage?" }[a.kind];
+  const more = new Set(list.map((x) => x.day)).size - 1;
+  const label = `${{ spike: "Spike", drop: "Drop", outage: "Outage?" }[a.kind]}${more > 0 ? ` +${more}` : ""}`;
   return (
-    <span className={`anomaly-flag ${a.kind}`} title={`${ANOMALY_LABEL[a.kind]} on ${a.day}: ${describeAnomaly(a)}`}>
+    <button
+      type="button"
+      className={`anomaly-flag ${a.kind}`}
+      title={`${ANOMALY_LABEL[a.kind]} on ${a.day}: ${describeAnomaly(a)}.${more > 0 ? ` ${more} more unusual day${more === 1 ? "" : "s"} in this range.` : ""} Click to see why`}
+      onClick={(e) => {
+        e.stopPropagation();
+        onOpen(a.day);
+      }}
+      onKeyDown={(e) => e.stopPropagation()}
+    >
       <Alarm size={11} />{label}
-    </span>
+    </button>
   );
 }
 
@@ -356,7 +369,7 @@ function lastSeen(site: OverviewSite): string {
   return "No data yet";
 }
 
-function SiteCard({ r, isAdmin, onOpen }: { r: Row; isAdmin: boolean; onOpen: () => void }) {
+function SiteCard({ r, isAdmin, onOpen, onAnomaly }: { r: Row; isAdmin: boolean; onOpen: () => void; onAnomaly: (day: string) => void }) {
   return (
     <div className="cell cell-link site-card" role="link" tabIndex={0} onClick={onOpen} onKeyDown={(e) => e.key === "Enter" && onOpen()} aria-label={`${r.site.domain}: ${whole(r.cur.visitors)} visitors`}>
       <div style={{ display: "flex", alignItems: "center", gap: "var(--space-2)" }}>
@@ -368,7 +381,7 @@ function SiteCard({ r, isAdmin, onOpen }: { r: Row; isAdmin: boolean; onOpen: ()
       </div>
       <div style={{ display: "flex", gap: "var(--space-2)", alignItems: "center", fontSize: 12 }}>
         <span className="muted" style={{ whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }}>{lastSeen(r.site)}</span>
-        <AnomalyFlag site={r.site} />
+        <AnomalyFlag site={r.site} onOpen={onAnomaly} />
         {r.site.cappedAt && <span className="anomaly-flag" title="This site hit its daily event limit; recording is paused until midnight UTC. Raise it in Admin → Sites → Settings.">Capped</span>}
         {isAdmin && <span style={{ marginLeft: "auto", flex: "none" }}><TrackerTag site={r.site} /></span>}
       </div>
