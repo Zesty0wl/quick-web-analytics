@@ -28,8 +28,9 @@ export type VitalDimension = (typeof VITAL_DIMENSIONS)[number];
 export type Dimension = SessionDimension | "page" | "event" | VitalDimension;
 export const DIMENSIONS: Dimension[] = [...SESSION_DIMENSIONS, "page", "event", ...VITAL_DIMENSIONS];
 
-export type TimeGrain = "hour" | "day" | "week" | "month";
-export const TIME_GRAINS: TimeGrain[] = ["hour", "day", "week", "month"];
+/** "quarter_hour": 15-minute buckets, for ranges of up to 7 days. */
+export type TimeGrain = "quarter_hour" | "hour" | "day" | "week" | "month";
+export const TIME_GRAINS: TimeGrain[] = ["quarter_hour", "hour", "day", "week", "month"];
 /** "weekhour": local weekday × hour of day, key = weekday (0 = Monday) * 24 + hour. */
 export type GroupBy = Dimension | TimeGrain | "weekhour";
 export type FilterOp = "is" | "is_not" | "contains";
@@ -39,6 +40,12 @@ export interface QuerySpec {
   /** Inclusive local dates in the site's timezone. */
   from: string;
   to: string;
+  /**
+   * Optional exact bounds (unix seconds, `since` inclusive, `until` exclusive), e.g. for "the last 24 hours". Each
+   * replaces the start or end of the from/to dates, which then only name the period.
+   */
+  since?: number;
+  until?: number;
   metrics: Metric[];
   groupBy?: GroupBy | null;
   filters?: Filter[];
@@ -67,7 +74,19 @@ export function validateSpec(input: unknown): QuerySpec {
   if (typeof q.from !== "string" || !DATE.test(q.from)) throw new Error("from must be YYYY-MM-DD");
   if (typeof q.to !== "string" || !DATE.test(q.to)) throw new Error("to must be YYYY-MM-DD");
   if (q.from > q.to) throw new Error("from must not be after to");
+  const bound = (v: unknown, name: string) => {
+    if (v === undefined || v === null) return undefined;
+    if (!Number.isInteger(v) || (v as number) < 0) throw new Error(`${name} must be unix seconds`);
+    return v as number;
+  };
+  const since = bound(q.since, "since");
+  const until = bound(q.until, "until");
+  if (since !== undefined && until !== undefined && since >= until) throw new Error("since must be before until");
   const groupBy = (q.groupBy ?? null) as GroupBy | null;
+  if (groupBy === "quarter_hour") {
+    const span = since !== undefined && until !== undefined ? (until - since) / 86_400 : (Date.parse(q.to) - Date.parse(q.from)) / 86_400_000 + 1;
+    if (span > 7) throw new Error("15-minute buckets are limited to 7 days; use hour or a shorter range");
+  }
   if (groupBy !== null && groupBy !== "weekhour" && !TIME_GRAINS.includes(groupBy as TimeGrain) && !DIMENSIONS.includes(groupBy as Dimension)) {
     throw new Error(`unknown groupBy: ${groupBy}`);
   }
@@ -89,5 +108,5 @@ export function validateSpec(input: unknown): QuerySpec {
   }
   const limit = q.limit === undefined ? undefined : Number(q.limit);
   if (limit !== undefined && (!Number.isInteger(limit) || limit < 1 || limit > 1000)) throw new Error("limit must be 1–1000");
-  return { from: q.from, to: q.to, metrics: metrics as Metric[], groupBy, filters: filters as Filter[], limit };
+  return { from: q.from, to: q.to, ...(since !== undefined ? { since } : {}), ...(until !== undefined ? { until } : {}), metrics: metrics as Metric[], groupBy, filters: filters as Filter[], limit };
 }

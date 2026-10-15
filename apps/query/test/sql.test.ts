@@ -1,7 +1,7 @@
 import { describe, expect, it } from "vitest";
 import { validateSpec } from "@qwa/shared";
 import { buildSql } from "../src/sql";
-import { localMidnight, offsetSegments, offsetAt, localTimeSql } from "../src/tz";
+import { localMidnight, offsetSegments, offsetAt, localTimeSql, quarterLabel } from "../src/tz";
 
 const files = { sessions: ["https://r2.local/s.parquet"], pageviews: ["https://r2.local/p.parquet"], engagement: [], custom: [] };
 
@@ -19,6 +19,9 @@ describe("timezones", () => {
     expect(segs[1]).toEqual([Date.UTC(2026, 2, 29, 1) / 1000, 3600]);
     expect(offsetAt("Europe/London", segs[1][0] - 1)).toBe(0);
     expect(localTimeSql("ts", segs)).toContain("CASE WHEN ts <");
+  });
+  it("labels 15-minute buckets", () => {
+    expect(quarterLabel(Date.UTC(2026, 9, 15, 13, 45) / 900_000)).toBe("2026-10-15 13:45");
   });
 });
 
@@ -48,6 +51,21 @@ describe("SQL builder", () => {
   it("escapes quotes in filter values", () => {
     const spec = validateSpec({ from: "2026-10-01", to: "2026-10-01", metrics: ["visitors"], filters: [["country", "is", "x' OR 1=1 --"]] });
     expect(buildSql({ ...base, spec }).sql).toContain("'x'' OR 1=1 --'");
+  });
+  it("groups into 15-minute buckets", () => {
+    const spec = validateSpec({ from: "2026-10-01", to: "2026-10-01", metrics: ["visitors"], groupBy: "quarter_hour" });
+    const { sql } = buildSql({ ...base, spec });
+    expect(sql).toContain("// 900 AS k");
+    expect(sql).toContain("k AS quarter_hour");
+    expect(sql).toMatch(/ORDER BY k$/);
+  });
+  it("checks exact bounds and limits 15-minute buckets to 7 days", () => {
+    expect(validateSpec({ from: "2026-10-01", to: "2026-10-02", since: 1_790_000_000, until: 1_790_086_400, metrics: ["visitors"] })).toMatchObject({ since: 1_790_000_000, until: 1_790_086_400 });
+    expect(validateSpec({ from: "2026-10-01", to: "2026-10-02", metrics: ["visitors"] })).not.toHaveProperty("since");
+    expect(() => validateSpec({ from: "2026-10-01", to: "2026-10-02", since: 2, until: 1, metrics: ["visitors"] })).toThrow();
+    expect(() => validateSpec({ from: "2026-10-01", to: "2026-10-02", since: "soon", metrics: ["visitors"] })).toThrow();
+    expect(() => validateSpec({ from: "2026-10-01", to: "2026-10-08", metrics: ["visitors"], groupBy: "quarter_hour" })).toThrow();
+    expect(() => validateSpec({ from: "2026-10-01", to: "2026-10-07", metrics: ["visitors"], groupBy: "quarter_hour" })).not.toThrow();
   });
   it("rejects metrics that don't fit the grouping", () => {
     expect(() => validateSpec({ from: "2026-10-01", to: "2026-10-02", metrics: ["bounce_rate"], groupBy: "page" })).toThrow();

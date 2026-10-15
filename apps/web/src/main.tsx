@@ -5,7 +5,7 @@ import { ApiError, useMe } from "./api";
 import { Spinner } from "./components/Bits";
 import { Header } from "./components/Header";
 import { SiteSwitcher } from "./components/SiteSwitcher";
-import { compareLabel, comparisonRange, periodLabel, presetRange, todayIn } from "./dates";
+import { compareLabel, comparisonRange, overviewRange, periodLabel, presetRange, todayIn } from "./dates";
 import { Overview } from "./pages/Overview";
 import { SECTIONS } from "./pages/sections";
 import { useAppearance } from "./theme";
@@ -20,11 +20,15 @@ const OAuthConsent = lazy(() => import("./pages/OAuthConsent").then((m) => ({ de
 
 const loading = <div className="busy-block" style={{ minHeight: "60vh" }}><Spinner size={16} />Loading…</div>;
 
-/** Re-render when the date changes in `tz`, so "today" and "last 30 days" move on at midnight in an open tab. */
+/**
+ * Re-render when the date changes in `tz`, so "today" and "last 30 days" move on at midnight in an open tab, and on
+ * the hour, so "last 24 hours" does.
+ */
 function useToday(tz?: string): string {
-  const [today, setToday] = useState(() => todayIn(tz));
+  const stamp = () => `${todayIn(tz)} ${Math.floor(Date.now() / 3_600_000)}`;
+  const [today, setToday] = useState(stamp);
   useEffect(() => {
-    const check = () => setToday(todayIn(tz));
+    const check = () => setToday(stamp());
     check();
     const t = setInterval(check, 30_000);
     document.addEventListener("visibilitychange", check);
@@ -67,8 +71,12 @@ function App() {
   const page = url.pathname.startsWith("/admin") && isAdmin ? "admin" : url.pathname.startsWith("/account") ? "account" : siteState ? "site" : "overview";
 
   const g = readGlobal(url);
-  const { from, to } = g.range === "custom" ? { from: g.from!, to: g.to! } : presetRange(g.range, site?.timezone);
-  const cmp = comparisonRange(from, to, g.compare);
+  // "All" starts at the site's first day, or on the overview the earliest of the sites'.
+  const first = site ? site.first_day : data.sites.map((s) => s.first_day).sort()[0];
+  const period = g.range === "custom" ? { from: g.from!, to: g.to! } : presetRange(g.range, site?.timezone, first);
+  const { from, to } = period;
+  const cmp = comparisonRange(period, g.compare, site?.timezone);
+  const overviewDates = overviewRange(period, cmp);
   const periodText = periodLabel(g.range, from, to);
   const cmpText = compareLabel(g.range, g.compare, from, to);
   const home = `/${globalParams(url)}`;
@@ -76,7 +84,7 @@ function App() {
   return (
     <>
       <Header
-        crumb={page === "site" && site ? <SiteSwitcher variant="crumb" sites={data.sites} currentId={site.id} url={url} navigate={navigate} dates={{ from, to, cfrom: cmp.from, cto: cmp.to }} /> : page === "admin" ? "Admin" : page === "account" ? "Account" : undefined}
+        crumb={page === "site" && site ? <SiteSwitcher variant="crumb" sites={data.sites} currentId={site.id} url={url} navigate={navigate} dates={overviewDates} /> : page === "admin" ? "Admin" : page === "account" ? "Account" : undefined}
         range={g.range}
         from={from}
         to={to}
@@ -93,18 +101,18 @@ function App() {
         onHome={linkHandler(navigate, home)}
         onAdmin={linkHandler(navigate, "/admin")}
         onAccount={linkHandler(navigate, "/account")}
-        sections={page === "site" && site ? SECTIONS : undefined}
+        sections={page === "site" && site && !url.pathname.includes("/unusual/") ? SECTIONS : undefined}
       />
       <main>
         <Suspense fallback={loading}>
         {page === "account" ? (
           <Account me={data} />
         ) : page === "admin" ? (
-          <Admin me={data} palette={appearance.palette} onPalette={appearance.setPalette} />
+          <Admin me={data} url={url} palette={appearance.palette} onPalette={appearance.setPalette} />
         ) : page === "site" ? (
-          <Site me={data} url={url} navigate={navigate} dates={{ from, to }} compare={g.compare} periodText={periodText} cmpText={cmpText} />
+          <Site me={data} url={url} navigate={navigate} dates={period} compare={g.compare} periodText={periodText} cmpText={cmpText} />
         ) : (
-          <Overview me={data} url={url} navigate={navigate} dates={{ from, to, cfrom: cmp.from, cto: cmp.to }} periodText={periodText} cmpText={cmpText} />
+          <Overview me={data} url={url} navigate={navigate} dates={overviewDates} periodText={periodText} cmpText={cmpText} />
         )}
         </Suspense>
       </main>

@@ -72,11 +72,61 @@ function CustomRange({ range, from, to, onRange }: Pick<Props, "range" | "from" 
   );
 }
 
-export function Header(p: Props) {
-  const go = (id: string) => {
-    const el = document.getElementById(id);
-    if (el) window.scrollTo({ top: el.getBoundingClientRect().top + window.scrollY - 120, behavior: "smooth" });
+/** Where the page must scroll for section `id` to sit just below the sticky header (however tall it has wrapped to). */
+function sectionTop(id: string): number | null {
+  const el = document.getElementById(id);
+  if (!el) return null;
+  const head = document.querySelector<HTMLElement>(".topwrap");
+  const covered = head && getComputedStyle(head).position === "sticky" ? head.getBoundingClientRect().height : 0;
+  return Math.max(0, el.getBoundingClientRect().top + window.scrollY - covered - 12);
+}
+
+let following: (() => void) | null = null;
+
+/**
+ * Scroll to a section. Sections render as they come near the screen, so the ones passed on the way grow and push the
+ * target down: keep following it until it settles, or the person scrolls themselves.
+ */
+function scrollToSection(id: string) {
+  following?.();
+  let top = sectionTop(id);
+  if (top === null) return;
+  window.scrollTo({ top, behavior: "smooth" });
+  let frame = 0;
+  const started = performance.now();
+  let moved = started;
+  const maxScroll = () => document.documentElement.scrollHeight - window.innerHeight;
+  let room = maxScroll();
+  const stop = () => {
+    cancelAnimationFrame(frame);
+    for (const e of ["wheel", "touchstart", "keydown", "mousedown"]) window.removeEventListener(e, stop);
+    following = null;
   };
+  for (const e of ["wheel", "touchstart", "keydown", "mousedown"]) window.addEventListener(e, stop, { passive: true });
+  following = stop;
+  const tick = () => {
+    const now = sectionTop(id);
+    if (now === null) return stop();
+    const t = performance.now();
+    if (Math.abs(now - top!) > 1 || maxScroll() > room + 1) {
+      // The section moved, or the page grew enough to scroll further towards it.
+      top = now;
+      room = maxScroll();
+      moved = t;
+      window.scrollTo({ top, behavior: "smooth" });
+    }
+    // Done once there and still for a second. Short of it (the page below hasn't loaded yet), keep waiting, up to 8s.
+    const there = Math.abs(window.scrollY - top!) <= 2;
+    if ((there && t - moved > 1000) || t - started > 8000) {
+      if (!there) window.scrollTo({ top: top! });
+      stop();
+    } else frame = requestAnimationFrame(tick);
+  };
+  frame = requestAnimationFrame(tick);
+}
+
+export function Header(p: Props) {
+  const go = scrollToSection;
   return (
     <div className="topwrap">
       <nav className="nav">

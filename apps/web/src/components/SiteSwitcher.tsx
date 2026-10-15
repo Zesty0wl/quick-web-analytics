@@ -1,6 +1,6 @@
 // Site name that opens a searchable list of sites, for jumping between sites without going back to the overview.
 import { useEffect, useMemo, useRef, useState } from "react";
-import { useOverview, type Me } from "../api";
+import { useOverview, type Me, type OverviewRange } from "../api";
 import { compact } from "../format";
 import { linkHandler, withParams, type Navigate } from "../url";
 import { ChevronDown, Search } from "./Icons";
@@ -11,7 +11,7 @@ interface Props {
   url: URL;
   navigate: Navigate;
   /** Current range and comparison, so the list can show each site's visitors for the same period. */
-  dates: { from: string; to: string; cfrom: string; cto: string };
+  dates: OverviewRange;
   variant: "title" | "crumb";
 }
 

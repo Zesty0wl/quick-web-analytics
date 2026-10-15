@@ -129,6 +129,7 @@ export function buildSql(input: SqlInput): { sql: string; key: string | null } {
     const timeCol = table === "sessions" ? "t.start" : "t.ts";
     if (groupBy === "day") return { expr: `${localTimeSql(timeCol, segments)} // 86400`, join: "" };
     if (groupBy === "hour") return { expr: `${localTimeSql(timeCol, segments)} // 3600`, join: "" };
+    if (groupBy === "quarter_hour") return { expr: `${localTimeSql(timeCol, segments)} // 900`, join: "" };
     if (groupBy === "weekhour") {
       const lt = localTimeSql(timeCol, segments);
       // 1970-01-01 was a Thursday, so (day + 3) % 7 makes Monday 0.
@@ -212,7 +213,7 @@ export function buildSql(input: SqlInput): { sql: string; key: string | null } {
   } else {
     const keyCol = groupBy;
     const joins = rest.map((t) => ` LEFT JOIN m_${t} USING (k)`).join("");
-    const isTime = groupBy === "day" || groupBy === "hour" || groupBy === "week" || groupBy === "month" || groupBy === "weekhour";
+    const isTime = groupBy === "day" || groupBy === "hour" || groupBy === "quarter_hour" || groupBy === "week" || groupBy === "month" || groupBy === "weekhour";
     const sortMetric = spec.metrics[0];
     const orderBy = isTime ? "k" : `${sortMetric} DESC NULLS LAST, k`;
     const limit = isTime ? "" : ` LIMIT ${spec.limit ?? 100}`;

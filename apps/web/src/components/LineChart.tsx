@@ -1,4 +1,4 @@
-import { useMemo, useRef, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import type { Metric, TimeGrain } from "@qwa/shared";
 import { bucketLabel, bucketTitle } from "../dates";
 import { ANOMALY_LABEL, change, METRIC_LABELS, metricValue } from "../format";
@@ -8,6 +8,10 @@ export interface ChartMark {
   index: number;
   kind: "spike" | "drop" | "outage";
   text: string;
+  /** The unusual day (for `onMark`). */
+  day?: string;
+  /** Where several fall on one point, the highest is the alarm drawn (the others are listed in the tooltip). */
+  rank?: number;
 }
 
 interface Props {
@@ -21,8 +25,29 @@ interface Props {
   onSelect?: (index: number) => void;
   /** Anomalies: an alarm icon above the point, explained in the tooltip. */
   marks?: ChartMark[];
+  /** Makes the alarms buttons, e.g. to open an explanation of that day. */
+  onMark?: (m: ChartMark) => void;
   /** For values that aren't dashboard metrics (e.g. Search Console's CTR): label and formatting. */
   fmt?: { label: string; value: (v: number) => string; count?: boolean };
+}
+
+/**
+ * The alarms to draw: one per point (the highest-ranked of any there), each lifted clear of an alarm on a nearby
+ * point that would otherwise cover it, so every alarm can be clicked.
+ */
+function placeMarks(marks: ChartMark[], px: (index: number) => number): { m: ChartMark; lift: number }[] {
+  const best = new Map<number, ChartMark>();
+  for (const m of marks) {
+    const had = best.get(m.index);
+    if (!had || (m.rank ?? 0) > (had.rank ?? 0)) best.set(m.index, m);
+  }
+  const placed: { m: ChartMark; lift: number }[] = [];
+  for (const m of [...best.values()].sort((a, b) => a.index - b.index)) {
+    let lift = 0;
+    while (placed.some((p) => Math.abs(px(p.m.index) - px(m.index)) < 24 && p.lift === lift)) lift += 26;
+    placed.push({ m, lift });
+  }
+  return placed;
 }
 
 /** A "nice" axis maximum: 1, 2, 2.5 or 5 × 10^n. */
@@ -39,11 +64,19 @@ const NON_COUNT = new Set<Metric>(["bounce_rate", "scroll_depth", "visit_duratio
 const W = 1000;
 const H = 300;
 
-export function LineChart({ keys, current, compareKeys, compare, metric, grain, height = 320, onSelect, marks = [], fmt }: Props) {
+export function LineChart({ keys, current, compareKeys, compare, metric, grain, height = 320, onSelect, marks = [], onMark, fmt }: Props) {
   const label = fmt?.label ?? METRIC_LABELS[metric];
   const show = (v: number) => (fmt ? fmt.value(v) : metricValue(metric, v));
   const plot = useRef<HTMLDivElement>(null);
   const [hover, setHover] = useState<number | null>(null);
+  // The plot's width, to keep alarms on neighbouring points from covering each other.
+  const [plotWidth, setPlotWidth] = useState(1000);
+  useEffect(() => {
+    if (!plot.current) return;
+    const ro = new ResizeObserver(([e]) => setPlotWidth(e.contentRect.width || 1000));
+    ro.observe(plot.current);
+    return () => ro.disconnect();
+  }, []);
   const n = keys.length;
   const hasCmp = !!compare && compare.length > 0;
   // Scale to what's drawn: the comparison is only drawn as far as the current period goes (e.g. yesterday's evening
@@ -96,8 +129,27 @@ export function LineChart({ keys, current, compareKeys, compare, metric, grain, 
             {hasCmp && <path d={path(compare!)} fill="none" stroke="var(--color-neutral-500)" strokeWidth={1.5} strokeDasharray="5 4" vectorEffect="non-scaling-stroke" />}
             {line && <path d={line} fill="none" stroke="var(--color-accent)" strokeWidth={2.5} vectorEffect="non-scaling-stroke" />}
           </svg>
-          {marks.map((m) => {
+          {placeMarks(marks, (i) => (x(i) / W) * plotWidth).map(({ m, lift }) => {
             const top = (y(current[m.index] ?? 0) / H) * 100;
+            const style = { left: `${(x(m.index) / W) * 100}%`, top: top < 12 ? `calc(${top}% + ${10 + lift}px)` : `calc(${top}% - ${30 + lift}px)` };
+            if (onMark) {
+              return (
+                <button
+                  key={`${m.index}-${m.kind}`}
+                  className={`chart-mark ${m.kind}`}
+                  style={style}
+                  onClick={(e) => {
+                    e.stopPropagation();
+                    onMark(m);
+                  }}
+                  onMouseMove={(e) => e.stopPropagation()}
+                  title={`${ANOMALY_LABEL[m.kind]}: see why`}
+                  aria-label={`${ANOMALY_LABEL[m.kind]}: ${m.text}. See why`}
+                >
+                  <Alarm size={13} />
+                </button>
+              );
+            }
             return (
               <div
                 key={`${m.index}-${m.kind}`}
@@ -122,9 +174,10 @@ export function LineChart({ keys, current, compareKeys, compare, metric, grain, 
                 )}
                 {ch !== null && <div className="ch">{ch > 0 ? "+" : ch < 0 ? "−" : ""}{Math.abs(ch).toFixed(1)}%</div>}
                 {hoverMarks.map((m) => (
-                  <div key={m.kind} className={`an ${m.kind}`}><Alarm size={12} /><span><b>{ANOMALY_LABEL[m.kind]}.</b> {m.text}</span></div>
+                  <div key={`${m.day ?? m.index}-${m.kind}`} className={`an ${m.kind}`}><Alarm size={12} /><span><b>{ANOMALY_LABEL[m.kind]}.</b> {m.text}</span></div>
                 ))}
-                {onSelect && grain !== "hour" && <div className="hint">Click to zoom in</div>}
+                {onMark && hoverMarks.length > 0 && <div className="hint">Click the alarm to see why</div>}
+                {onSelect && grain !== "hour" && grain !== "quarter_hour" && <div className="hint">Click to zoom in</div>}
               </div>
             </>
           )}

@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { api, useAlerts, type Me } from "../api";
 import { PALETTES, type Palette } from "../theme";
@@ -23,8 +23,15 @@ interface UserRow {
 
 const lines = (s: string) => s.split(/[\s,]+/).map((x) => x.trim()).filter(Boolean);
 
-export function Admin({ me, palette, onPalette }: { me: Me; palette: Palette; onPalette: (p: Palette) => void }) {
-  const [tab, setTab] = useState<"users" | "sites" | "alerts" | "google">("users");
+type Tab = "users" | "sites" | "alerts" | "google";
+type SiteView = "install" | "settings" | "delete";
+
+/** `?tab=sites&site=<id>&view=settings` opens on one site's settings (linked from each site's page). */
+export function Admin({ me, url, palette, onPalette }: { me: Me; url: URL; palette: Palette; onPalette: (p: Palette) => void }) {
+  const q = url.searchParams;
+  const [tab, setTab] = useState<Tab>(() => (["users", "sites", "alerts", "google"].includes(q.get("tab") ?? "") ? (q.get("tab") as Tab) : "users"));
+  const openSite = Number(q.get("site")) || null;
+  const openView: SiteView = q.get("view") === "settings" ? "settings" : "install";
   const heads = {
     users: ["Users & access", "Who can sign in, and which sites they can see"],
     sites: ["Sites", "Add sites, install the tracker and change settings"],
@@ -62,7 +69,7 @@ export function Admin({ me, palette, onPalette }: { me: Me; palette: Palette; on
         <button className={tab === "alerts" ? "on" : ""} onClick={() => setTab("alerts")}>Alerts</button>
         <button className={tab === "google" ? "on" : ""} onClick={() => setTab("google")}>Google</button>
       </div>
-      {tab === "users" ? <Users me={me} /> : tab === "sites" ? <Sites /> : tab === "alerts" ? <Alerts me={me} /> : <Google />}
+      {tab === "users" ? <Users me={me} /> : tab === "sites" ? <Sites initialOpen={openSite} initialView={openView} /> : tab === "alerts" ? <Alerts me={me} /> : <Google />}
     </div>
   );
 }
@@ -304,7 +311,7 @@ function Badge({ status }: { status: SiteStatus | null | undefined }) {
   );
 }
 
-function Sites() {
+function Sites({ initialOpen, initialView }: { initialOpen: number | null; initialView: SiteView }) {
   const qc = useQueryClient();
   const sites = useQuery({ queryKey: ["admin-sites"], queryFn: () => api<{ sites: SiteRow[] }>("/admin/sites") });
   const status = useQuery({
@@ -315,7 +322,7 @@ function Sites() {
     refetchOnWindowFocus: true,
     staleTime: 10_000,
   });
-  const [openId, setOpenId] = useState<number | null>(null);
+  const [openId, setOpenId] = useState<number | null>(initialOpen);
   const [domain, setDomain] = useState("");
   const [timezone, setTimezone] = useState(Intl.DateTimeFormat().resolvedOptions().timeZone);
   const create = useMutation({
@@ -346,6 +353,7 @@ function Sites() {
           site={s}
           status={status.data ? status.data.status[String(s.id)] ?? null : undefined}
           open={openId === s.id}
+          initialView={s.id === initialOpen ? initialView : "install"}
           onToggle={() => setOpenId(openId === s.id ? null : s.id)}
         />
       ))}
@@ -353,10 +361,15 @@ function Sites() {
   );
 }
 
-function SiteCard({ site, status, open, onToggle }: { site: SiteRow; status: SiteStatus | null | undefined; open: boolean; onToggle: () => void }) {
-  const [tab, setTab] = useState<"install" | "settings" | "delete">("install");
+function SiteCard({ site, status, open, initialView, onToggle }: { site: SiteRow; status: SiteStatus | null | undefined; open: boolean; initialView: SiteView; onToggle: () => void }) {
+  const [tab, setTab] = useState<SiteView>(initialView);
+  // Opened from a link: bring the card into view once it has rendered.
+  const ref = useRef<HTMLElement>(null);
+  useEffect(() => {
+    if (initialView !== "install") ref.current?.scrollIntoView({ block: "start" });
+  }, [initialView]);
   return (
-    <section className="cell">
+    <section className="cell" ref={ref} style={{ scrollMarginTop: 120 }}>
       <header className="panel-head clickable" onClick={onToggle}>
         <h3>{site.domain}</h3>
         <span className="hint"><Badge status={status} /> {open ? "▾" : "▸"}</span>
@@ -540,9 +553,19 @@ function SiteSettings({ site }: { site: SiteRow }) {
   const [cap, setCap] = useState(site.daily_cap === null ? "" : String(site.daily_cap));
   const capValue = cap.trim() === "" ? null : Number(cap.replace(/[,\s_]/g, ""));
   const save = useMutation({
-    mutationFn: () => api(`/admin/sites/${site.id}`, { method: "PATCH", body: JSON.stringify({ timezone: tz, allowed_hostnames: lines(hosts), ip_blocklist: lines(ips), daily_cap: capValue }) }),
+    mutationFn: (blocklist?: string[]) =>
+      api(`/admin/sites/${site.id}`, { method: "PATCH", body: JSON.stringify({ timezone: tz, allowed_hostnames: lines(hosts), ip_blocklist: blocklist ?? lines(ips), daily_cap: capValue }) }),
     onSuccess: () => qc.invalidateQueries({ queryKey: ["admin-sites"] }),
   });
+  // The admin's own IP, to stop counting their own visits with one press (added and saved straight away).
+  const me = useQuery({ queryKey: ["my-ip"], queryFn: () => api<{ ip: string; network: string | null }>("/admin/my-ip"), staleTime: 10 * 60_000 });
+  const block = (rule: string) => {
+    const next = [...lines(ips), rule];
+    setIps(next.join("\n"));
+    save.mutate(next);
+  };
+  const listed = lines(ips);
+  const mine = me.data && [me.data.ip, me.data.network].find((x) => x && listed.includes(x));
   return (
     <div className="site-settings">
       <label>Timezone <input value={tz} onChange={(e) => setTz(e.target.value)} /></label>
@@ -552,10 +575,30 @@ function SiteSettings({ site }: { site: SiteRow }) {
       <label>Blocked IPs or CIDR ranges (one per line)
         <textarea rows={3} value={ips} onChange={(e) => setIps(e.target.value)} />
       </label>
+      {me.data && (
+        <div className="my-ip">
+          {mine ? (
+            <span className="hint">Your visits aren't counted: <code>{mine}</code> is blocked.</span>
+          ) : me.data.network ? (
+            <>
+              <button type="button" className="btn btn-secondary" onClick={() => block(me.data!.network!)} disabled={save.isPending}>Block my network</button>
+              <span className="hint">
+                <code>{me.data.network}</code>, your connection's IPv6 range: your address in it changes every day or so.{" "}
+                <button type="button" className="linklike" onClick={() => block(me.data!.ip)} disabled={save.isPending}>Just this address</button>
+              </span>
+            </>
+          ) : (
+            <>
+              <button type="button" className="btn btn-secondary" onClick={() => block(me.data!.ip)} disabled={save.isPending}>Block my IP</button>
+              <span className="hint"><code>{me.data.ip}</code>, so your own visits aren't counted. Saves straight away.</span>
+            </>
+          )}
+        </div>
+      )}
       <label>Daily event limit (empty = default of 3,000,000; 0 = no limit). Past it, the site stops recording until midnight UTC. A brake on costs.
         <input inputMode="numeric" placeholder="3,000,000" value={cap} onChange={(e) => setCap(e.target.value)} />
       </label>
-      <button onClick={() => save.mutate()} disabled={save.isPending || (capValue !== null && !(Number.isInteger(capValue) && capValue >= 0))}>Save</button>
+      <button onClick={() => save.mutate(undefined)} disabled={save.isPending || (capValue !== null && !(Number.isInteger(capValue) && capValue >= 0))}>Save</button>
       {save.isSuccess && <span className="hint"> Saved</span>}
       {save.isError && <span className="error">{(save.error as Error).message}</span>}
     </div>

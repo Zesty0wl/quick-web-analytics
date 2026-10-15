@@ -7,6 +7,16 @@ All notable changes to Quick Web Analytics. Dates are UTC. Database changes ship
 
 ### Added
 
+- **More date ranges: 24H and All.** The range picker is now Today · 24H · 7D · 30D · 90D · 12M · All.
+  - **24H:** the last 24 whole hours (this hour so far included), compared with the 24 hours before. It moves on each hour in an open tab. On the overview it totals that window for every site, as Today does for the day.
+  - **All:** from a site's first day with traffic (imported history included), or on the overview from the earliest of your sites'. Reports can now span up to about 10 years (was 800 days).
+  - **15-minute buckets:** Today and 24H chart in 15 minutes by default, with Hourly as the other choice. Empty hours and quarter-hours now show as zero rather than being skipped.
+  - **API:** the query spec takes optional `since`/`until` (unix seconds) to replace the start or end of the `from`/`to` dates, and a new `quarter_hour` grouping (up to 7 days). `/api/overview` and `/api/breakdown` take `since`/`until`/`csince`/`cuntil`.
+  - **Agents:** the MCP tools take `period: "24h"`, and `timeseries` takes `grain: "quarter_hour"`.
+- **Why was this day unusual?** Click a spike, drop or outage alarm on a site's chart to open a page explaining it: the figure against the usual for that weekday, the last four weeks (or, for today's hourly alert, today's hours against a usual day), and the sources, pages and countries that moved most. A source or page opens that day filtered to it. Outages get a checklist. Other unusual days in its four-week chart carry an alarm too, one click from their own explanation. It's the same analysis as the alert emails, at `/s/<site>/unusual/<day>`, from the new `GET /api/sites/:site/anomalies/:day`.
+- **Settings link on each site's page** (admins): opens Admin → Sites with that site's settings showing.
+- **Block your own IP in one press.** A site's settings show the IP you're browsing from, with a button that adds it to the site's blocklist and saves, so your own visits stop counting. On IPv6 it offers your /64 network, which outlasts the daily change of address. New: `GET /api/admin/my-ip`.
+
 - **Drill into the overview's totals.** Click any card at the top of the overview (Visitors, Pageviews, Avg. visit, Bounce rate, Events) to see what's behind it across all sites:
   - **Chart:** a full-size chart of that metric against the comparison period. Click a day (or week, on long ranges) to narrow everything below to it, compared with the matching day before.
   - **Tables:** by site with a trend line each, and by what explains the metric: events by name, pages, sources, countries or entry pages. Every column sorts. Search, pick a site, or combine the same event, source or country across sites. Counts list the biggest movers first, in the direction the total moved.
@@ -89,6 +99,12 @@ All notable changes to Quick Web Analytics. Dates are UTC. Database changes ship
 - **Live updates need nothing new in Cloudflare.** The WebSocket (`/api/sites/<id>/live`) is a dashboard path, behind the same Access application. Deploy both Workers together with `npm run deploy`, which deploys the query Worker first.
 - **Deploy both Workers** (`npm run deploy`): the query Worker reads the new Web Vitals columns. Older Parquet files keep working as they are.
 - **Add `<hostname>/mcp`, `/.well-known/oauth-protected-resource`, `/.well-known/oauth-protected-resource/mcp`, `/.well-known/oauth-authorization-server`, `/oauth/register` and `/oauth/token` to the public-paths (bypass) Access application,** and the `MCP_LIMITER` rate-limit binding from `wrangler.example.jsonc`.
+
+### Fixed
+
+- **Realtime bar chart:** the per-minute bars now scroll along once a minute instead of reshuffling every 10 seconds. Buckets start on whole clock minutes (they slid with the current second), the chart keeps a fixed height rather than following the lists beside it, and its scale changes in steps of at most 25%, so the tallest bar always fills most of the height.
+- **Chart alarms** each open their own day. Several anomalies on one point (a week or month), or on neighbouring days, drew alarms on top of each other, so a click could open a different day from the one you meant. Now there's one alarm per point (the most unusual), and alarms that would overlap are lifted clear of each other.
+- **Section links** on a site's page land on the section, just below the header, however tall the header has wrapped and as sections load on the way.
 
 ## [0.2.0] - 2026-10-09
 

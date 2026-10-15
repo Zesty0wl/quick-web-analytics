@@ -4,7 +4,8 @@ import { addDays, todayIn } from "./dates";
 
 export interface Me {
   user: { id: number; email: string; name: string | null; role: "admin" | "viewer" };
-  sites: { id: number; domain: string; timezone: string }[];
+  /** `first_day`: the first local day with traffic (or the day the site was added), where "All" starts. */
+  sites: { id: number; domain: string; timezone: string; first_day: string }[];
 }
 
 export class ApiError extends Error {
@@ -45,6 +46,9 @@ export const useMe = () => useQuery({ queryKey: ["me"], queryFn: () => api<Me>("
 export interface StatsQuery {
   from: string;
   to: string;
+  /** Exact bounds in unix seconds (e.g. the last 24 hours); see QuerySpec. */
+  since?: number;
+  until?: number;
   metrics: Metric[];
   groupBy?: GroupBy | null;
   filters?: Filter[];
@@ -207,6 +211,8 @@ export interface Anomaly {
   kind: AnomalyKind;
   value: number;
   expected: number;
+  /** How far from usual, in spreads (negative for drops): the bigger, the more unusual. */
+  score?: number;
   /** "visitors": a whole day (nightly check); "intraday": the day so far (hourly check). */
   metric?: "visitors" | "intraday";
   detail?: { hour: number; window: "today" | "last3h" } | null;
@@ -232,10 +238,22 @@ export interface OverviewSite {
   qwa14d?: number;
 }
 
-export const useOverview = (r: { from: string; to: string; cfrom: string; cto: string }) =>
+/** Dates for the overview, plus exact windows (unix seconds) for "the last 24 hours" and the 24 before. */
+export interface OverviewRange {
+  from: string;
+  to: string;
+  cfrom: string;
+  cto: string;
+  since?: number;
+  until?: number;
+  csince?: number;
+  cuntil?: number;
+}
+
+export const useOverview = (r: OverviewRange) =>
   useQuery({
     queryKey: ["overview", r],
-    queryFn: () => api<{ sites: OverviewSite[] }>(`/overview?${new URLSearchParams(r)}`),
+    queryFn: () => api<{ sites: OverviewSite[] }>(`/overview?${new URLSearchParams(Object.entries(r).filter(([, v]) => v !== undefined).map(([k, v]) => [k, String(v)]))}`),
     refetchInterval: 30_000,
     refetchOnWindowFocus: true,
     staleTime: 10_000,
@@ -249,6 +267,10 @@ export interface CrossQuery {
   to: string;
   cfrom: string;
   cto: string;
+  since?: number;
+  until?: number;
+  csince?: number;
+  cuntil?: number;
   metrics: Metric[];
   groupBy: Dimension;
   filters?: Filter[];
@@ -288,6 +310,43 @@ export function useAnomalies(siteId: number, from: string, to: string) {
     queryFn: () => api<{ anomalies: Anomaly[] }>(`/sites/${siteId}/anomalies?from=${from}&to=${to}`),
     staleTime: 10 * 60_000,
     placeholderData: (prev) => prev,
+  });
+}
+
+export interface DayFigures {
+  day: string;
+  visitors: number;
+  visits: number;
+  pageviews: number;
+  bounces: number;
+  duration_sum: number;
+}
+/** A source, page or country: visitors on the day against its usual (scaled to the window for hourly alerts). */
+export interface Mover {
+  name: string;
+  value: number;
+  usual: number;
+  /** "+43%", "3.2×", "new"… */
+  change: string;
+}
+export interface AnomalyExplained {
+  anomaly: Anomaly;
+  detail: {
+    /** The 28 days ending on the unusual day, and the same weekday over the six weeks before (the baseline). */
+    history: DayFigures[];
+    baseline: DayFigures[];
+    lastEventAt?: number | null;
+    intraday?: { hour: number; window: "today" | "last3h"; history: number[]; hours?: { today: number[]; usual: number[] } };
+  };
+  movers: { sources: Mover[]; pages: Mover[]; countries: Mover[] } | null;
+}
+
+export function useAnomalyExplained(siteId: number, day: string) {
+  return useQuery({
+    queryKey: ["anomaly", siteId, day],
+    queryFn: () => api<AnomalyExplained>(`/sites/${siteId}/anomalies/${day}`),
+    staleTime: 5 * 60_000,
+    retry: false,
   });
 }
 

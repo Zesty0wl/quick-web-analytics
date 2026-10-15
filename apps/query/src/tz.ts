@@ -69,3 +69,8 @@ export function dayLabel(localDayNumber: number): string {
 export function hourLabel(localHourNumber: number): string {
   return new Date(localHourNumber * 3_600_000).toISOString().slice(0, 13).replace("T", " ") + ":00";
 }
+
+/** "YYYY-MM-DD HH:MM" for a local 15-minute bucket number. */
+export function quarterLabel(localQuarterNumber: number): string {
+  return new Date(localQuarterNumber * 900_000).toISOString().slice(0, 16).replace("T", " ");
+}

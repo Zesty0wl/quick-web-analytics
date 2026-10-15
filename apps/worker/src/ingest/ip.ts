@@ -48,6 +48,14 @@ export function ipMatches(ip: string, rule: string): boolean {
   return a.bits >> shift === b.bits >> shift;
 }
 
+/** For IPv6, the /64 network the address is in (privacy addresses change within it every day or so); else null. */
+export function ipv6Network(ip: string): string | null {
+  const p = parseIp(ip);
+  if (!p || p.v !== 6) return null;
+  const groups = Array.from({ length: 4 }, (_, i) => ((p.bits >> BigInt(112 - 16 * i)) & 0xffffn).toString(16));
+  return `${groups.join(":")}::/64`;
+}
+
 export function ipBlocked(ip: string, blocklist: string[]): boolean {
   return blocklist.some((rule) => ipMatches(ip, rule));
 }

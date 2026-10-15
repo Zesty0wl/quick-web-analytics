@@ -6,12 +6,13 @@ import type { Env, Site } from "./env";
 import { forViewer } from "./realtime";
 import type { LiveFiles } from "../../query/src/index";
 import { allSites, invalidateSites, siteById } from "./sites";
-import { alertDetail, anomalyJob, checkIntraday, emailConfigured, refreshAnomalies, sendAlertEmail, siteAnomalies } from "./alerts";
-import { sampleAlert } from "./email";
+import { alertDetail, anomalyJob, checkIntraday, emailConfigured, explainAnomaly, refreshAnomalies, sendAlertEmail, siteAnomalies } from "./alerts";
+import { moverChange, sampleAlert, topMovers } from "./email";
 import { createDemoSites, demoTick, seededMarker, seedHistory, seedToday } from "./demo";
 import { rollupSite, storedDays, type DayStats } from "./rollup";
 import { addDays, localMidnight, todayIn } from "./tz";
 import { alpha2 } from "./iso3";
+import { clientIp, ipv6Network } from "./ingest/ip";
 import { createToken, forgetGrant, listTokens, revokeToken } from "./tokens";
 import { approve, checkAuthorize, listGrants, revokeGrant } from "./oauth";
 import {
@@ -55,8 +56,27 @@ api.get("/me", async (c) => {
   const user = c.get("user");
   const visible = await visibleSiteIds(c.env, user);
   const sites = (await allSites(c.env)).filter((s) => visible === "all" || visible.includes(s.id));
-  return c.json({ user, sites: sites.map(({ id, domain, timezone }) => ({ id, domain, timezone })) });
+  const first = await firstDays(c.env);
+  return c.json({ user, sites: sites.map(({ id, domain, timezone }) => ({ id, domain, timezone, first_day: first.get(id) ?? todayIn(timezone) })) });
 });
+
+/** Each site's first day with traffic (imported history included), or the day it was added: where "All" starts. */
+let firstCache: { at: number; days: Map<number, string> } | null = null;
+async function firstDays(env: Env): Promise<Map<number, string>> {
+  if (firstCache && Date.now() - firstCache.at < PAST_TTL_MS) return firstCache.days;
+  const { results } = await env.DB.prepare(
+    `SELECT s.id, COALESCE((SELECT MIN(day) FROM daily_stats d WHERE d.site_id = s.id AND (d.visitors > 0 OR d.pageviews > 0)), substr(s.created_at, 1, 10)) day FROM sites s`,
+  ).all<{ id: number; day: string | null }>();
+  const days = new Map(results.filter((r) => r.day).map((r) => [r.id, r.day!]));
+  firstCache = { at: Date.now(), days };
+  return days;
+}
+
+/** How far back a site's Durable Object can answer from its own events (it keeps 3 days; this leaves a margin). */
+const LOCAL_WINDOW_S = 60 * 3600;
+
+/** The longest range a report may cover: "All" on a site with years of history. */
+const MAX_RANGE_DAYS = 3700;
 
 const DATE = /^\d{4}-\d{2}-\d{2}$/;
 const EMPTY = (day: string): DayStats => ({ day, visitors: 0, visits: 0, pageviews: 0, events: 0, bounces: 0, duration_sum: 0 });
@@ -90,7 +110,13 @@ api.get("/overview", async (c) => {
   const q = (k: string) => c.req.query(k) ?? "";
   const from = q("from"), to = q("to"), cfrom = q("cfrom"), cto = q("cto");
   if (![from, to, cfrom, cto].every((d) => DATE.test(d)) || from > to || cfrom > cto) return c.json({ error: "from/to/cfrom/cto must be YYYY-MM-DD ranges" }, 400);
-  if (addDays(from, 800) < to || addDays(cfrom, 800) < cto) return c.json({ error: "range too long" }, 400);
+  if (addDays(from, MAX_RANGE_DAYS) < to || addDays(cfrom, MAX_RANGE_DAYS) < cto) return c.json({ error: "range too long" }, 400);
+  // Optional exact windows (e.g. the last 24 hours against the 24 before): one total each, keyed by `to` and `cto`.
+  const secs = (k: string) => (/^\d{1,12}$/.test(q(k)) ? Number(q(k)) : null);
+  const since = secs("since"), until = secs("until"), csince = secs("csince"), cuntil = secs("cuntil");
+  const windows = since !== null && until !== null && csince !== null && cuntil !== null && since < until && csince < cuntil
+    ? { cur: { day: to, start: since, end: until }, prev: { day: cto, start: csince, end: cuntil } }
+    : null;
 
   const visible = await visibleSiteIds(c.env, user);
   const sites = (await allSites(c.env)).filter((s) => visible === "all" || visible.includes(s.id));
@@ -102,8 +128,12 @@ api.get("/overview", async (c) => {
       const today = todayIn(site.timezone);
       const have = new Map((stored.get(site.id) ?? []).map((d) => [d.day, d]));
       const inRange = (d: string) => (d >= from && d <= to) || (d >= cfrom && d <= cto);
-      const liveDays = [today, addDays(today, -1)].filter((d) => inRange(d) && (d === today || !have.has(d)));
-      const bounds = liveDays.map((day) => ({ day, start: localMidnight(site.timezone, day), end: localMidnight(site.timezone, addDays(day, 1)) }));
+      const liveDays = windows ? [] : [today, addDays(today, -1)].filter((d) => inRange(d) && (d === today || !have.has(d)));
+      // Windows the site's Durable Object still holds come from there; older ones (a year ago) from the query worker.
+      const held = Date.now() / 1000 - LOCAL_WINDOW_S;
+      const bounds = windows
+        ? [windows.cur, windows.prev].filter((w) => w.start >= held)
+        : liveDays.map((day) => ({ day, start: localMidnight(site.timezone, day), end: localMidnight(site.timezone, addDays(day, 1)) }));
       let live;
       try {
         live = await c.env.SITE.get(c.env.SITE.idFromName(String(site.id))).overview(bounds);
@@ -111,12 +141,21 @@ api.get("/overview", async (c) => {
         console.error("overview DO failed", site.domain, e);
         live = { firstEventAt: null, lastEventAt: null, plausible14d: 0, qwa14d: 0, plausibleLastAt: null, qwaLastAt: null, cappedAt: null, now: 0, perMinute: [] as number[], days: [] };
       }
-      for (const d of live.days) {
-        let stats: DayStats = d;
+      const fromDo = new Map(live.days.map((d) => [d.day, d]));
+      // The windows' totals replace those days' stored whole-day totals.
+      if (windows) for (const w of [windows.cur, windows.prev]) have.delete(w.day);
+      const todo: (Partial<DayStats> & { day: string; complete: boolean; start?: number; end?: number })[] = windows
+        ? [windows.cur, windows.prev].map((w) => ({ ...(fromDo.get(w.day) ?? {}), ...w, complete: fromDo.get(w.day)?.complete ?? false }))
+        : live.days;
+      for (const d of todo) {
+        let stats: DayStats = { ...EMPTY(d.day), ...d };
         if (!d.complete) {
           try {
             const r = await c.env.QUERY.query(site.id, site.timezone, {
-              from: d.day, to: d.day, metrics: ["visitors", "visits", "pageviews", "events", "bounce_rate", "visit_duration"],
+              from: d.start !== undefined ? todayIn(site.timezone, d.start * 1000) : d.day,
+              to: d.end !== undefined ? todayIn(site.timezone, (d.end - 1) * 1000) : d.day,
+              ...(d.start !== undefined ? { since: d.start, until: d.end } : {}),
+              metrics: ["visitors", "visits", "pageviews", "events", "bounce_rate", "visit_duration"],
             });
             const x = r.rows[0] ?? {};
             stats = {
@@ -130,6 +169,7 @@ api.get("/overview", async (c) => {
         have.set(d.day, stats);
       }
       const series = (a: string, b: string) => {
+        if (windows) return [have.get(b) ?? EMPTY(b)];
         const days: DayStats[] = [];
         for (let d = a; d <= b && d <= today; d = addDays(d, 1)) days.push(have.get(d) ?? EMPTY(d));
         return days;
@@ -165,19 +205,22 @@ async function liveFor(env: Env, site: Site, specs: QuerySpec[]): Promise<LiveFi
  */
 api.post("/breakdown", async (c) => {
   const user = c.get("user");
-  const body = await c.req.json<{ from?: string; to?: string; cfrom?: string; cto?: string; metrics?: unknown; groupBy?: unknown; filters?: unknown; limit?: unknown; sites?: unknown }>().catch(() => null);
+  const body = await c.req.json<{
+    from?: string; to?: string; cfrom?: string; cto?: string; since?: unknown; until?: unknown; csince?: unknown; cuntil?: unknown;
+    metrics?: unknown; groupBy?: unknown; filters?: unknown; limit?: unknown; sites?: unknown;
+  }>().catch(() => null);
   if (!body) return c.json({ error: "expected a JSON body" }, 400);
   if (!DIMENSIONS.includes(body.groupBy as Dimension)) return c.json({ error: "groupBy must be a dimension" }, 400);
   const dim = body.groupBy as Dimension;
   const limit = Math.min(Math.max(Number(body.limit) || 100, 1), 300);
   let cur: QuerySpec, prev: QuerySpec;
   try {
-    cur = validateSpec({ from: body.from, to: body.to, metrics: body.metrics, groupBy: dim, filters: body.filters, limit });
-    prev = validateSpec({ from: body.cfrom, to: body.cto, metrics: [cur.metrics[0]], groupBy: dim, filters: body.filters, limit: 300 });
+    cur = validateSpec({ from: body.from, to: body.to, since: body.since, until: body.until, metrics: body.metrics, groupBy: dim, filters: body.filters, limit });
+    prev = validateSpec({ from: body.cfrom, to: body.cto, since: body.csince, until: body.cuntil, metrics: [cur.metrics[0]], groupBy: dim, filters: body.filters, limit: 300 });
   } catch (e) {
     return c.json({ error: (e as Error).message }, 400);
   }
-  if (addDays(cur.from, 800) < cur.to || addDays(prev.from, 800) < prev.to) return c.json({ error: "range too long" }, 400);
+  if (addDays(cur.from, MAX_RANGE_DAYS) < cur.to || addDays(prev.from, MAX_RANGE_DAYS) < prev.to) return c.json({ error: "range too long" }, 400);
   const visible = await visibleSiteIds(c.env, user);
   const wanted = Array.isArray(body.sites) ? new Set(body.sites.map(Number)) : null;
   const sites = (await allSites(c.env)).filter((s) => (visible === "all" || visible.includes(s.id)) && (!wanted || wanted.has(s.id)));
@@ -267,6 +310,30 @@ api.get("/sites/:site/anomalies", async (c) => {
   if (!DATE.test(from) || !DATE.test(to)) return c.json({ error: "from/to must be YYYY-MM-DD" }, 400);
   const list = await siteAnomalies(c.env, [site.id], from, to);
   return c.json({ anomalies: list.map(({ day, kind, value, expected, score, metric, detail }) => ({ day, kind, value, expected, score, metric, detail: detail ? JSON.parse(detail) : null })) });
+});
+
+/**
+ * Why one day was unusual: the anomaly as recorded, the figures around it, and the sources, pages and countries that
+ * moved most in its direction (as in the alert email).
+ */
+api.get("/sites/:site/anomalies/:day", async (c) => {
+  const site = await siteGuard(c);
+  if (!site) return c.json({ error: "site not found" }, 404);
+  const day = c.req.param("day");
+  if (!DATE.test(day)) return c.json({ error: "day must be YYYY-MM-DD" }, 400);
+  const list = await siteAnomalies(c.env, [site.id], day, day);
+  // The nightly whole-day check, if it flagged the day; otherwise the hourly one.
+  const a = list.find((x) => x.metric === "visitors") ?? list[0];
+  if (!a) return c.json({ error: "Nothing unusual was recorded for this site on that day." }, 404);
+  const detail = await explainAnomaly(c.env, site, a);
+  const movers = detail.drivers
+    ? Object.fromEntries((["sources", "pages", "countries"] as const).map((k) => [k, topMovers(detail.drivers![k], a.kind, 8).map((m) => ({ ...m, change: moverChange(m) }))]))
+    : null;
+  return c.json({
+    anomaly: { day: a.day, kind: a.kind, value: a.value, expected: a.expected, metric: a.metric, detail: a.detail ? JSON.parse(a.detail) : null },
+    detail,
+    movers,
+  });
 });
 
 /** The signed-in user's alert settings ("all sites", or a list), and whether email is set up at all. */
@@ -549,6 +616,15 @@ function validTimezone(tz: string): boolean {
 }
 
 admin.get("/sites", async (c) => c.json({ sites: await allSites(c.env) }));
+
+/**
+ * The admin's own IP as Cloudflare sees it (the tracker posts to this same hostname, so it's what their visits come
+ * from), for one-click blocking in a site's settings. IPv6 also gets its /64, which outlasts the daily address change.
+ */
+admin.get("/my-ip", (c) => {
+  const ip = clientIp(c.req.raw);
+  return c.json({ ip, network: ipv6Network(ip) });
+});
 
 admin.post("/sites", async (c) => {
   const body = await c.req.json<{ domain?: string; timezone?: string }>();

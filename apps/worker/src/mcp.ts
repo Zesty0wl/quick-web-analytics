@@ -63,7 +63,7 @@ async function resolveSite(c: Call, ref: unknown): Promise<Site> {
   return site;
 }
 
-const PERIODS = ["today", "yesterday", "7d", "28d", "30d", "90d", "6m", "12m", "month_to_date", "last_month"] as const;
+const PERIODS = ["today", "yesterday", "24h", "7d", "28d", "30d", "90d", "6m", "12m", "month_to_date", "last_month"] as const;
 const DATE = /^\d{4}-\d{2}-\d{2}$/;
 const daysBetween = (a: string, b: string) => Math.round((Date.parse(b) - Date.parse(a)) / 86_400_000) + 1;
 
@@ -81,7 +81,16 @@ interface Period {
   cto: string;
   label: string;
   cmpLabel: string;
+  /** "24h": exact windows in unix seconds (the dates then name the days they touch). */
+  since?: number;
+  until?: number;
+  csince?: number;
+  cuntil?: number;
 }
+
+/** A period's current and comparison ranges, as query spec fields. */
+const curRange = (p: Period) => ({ from: p.from, to: p.to, ...(p.since !== undefined ? { since: p.since, until: p.until } : {}) });
+const prevRange = (p: Period) => ({ from: p.cfrom, to: p.cto, ...(p.csince !== undefined ? { since: p.csince, until: p.cuntil } : {}) });
 
 export function resolvePeriod(site: Site, args: Json): Period {
   const today = todayIn(site.timezone);
@@ -95,6 +104,22 @@ export function resolvePeriod(site: Site, args: Json): Period {
   } else {
     const p = String(args.period ?? "30d");
     const back: Record<string, number> = { today: 0, "7d": 6, "28d": 27, "30d": 29, "90d": 89, "6m": 182, "12m": 364 };
+    if (p === "24h") {
+      // Whole hours: the 23 before this one, and this one so far.
+      const until = (Math.floor(Date.now() / 3_600_000) + 1) * 3600;
+      const since = until - 86_400;
+      const yearBefore = (sec: number) => {
+        const d = new Date(sec * 1000);
+        d.setUTCFullYear(d.getUTCFullYear() - 1);
+        return d.getTime() / 1000;
+      };
+      const [csince, cuntil] = args.compare === "year" ? [yearBefore(since), yearBefore(until)] : [since - 86_400, since];
+      const day = (sec: number) => todayIn(site.timezone, sec * 1000);
+      return {
+        from: day(since), to: today, cfrom: day(csince), cto: day(cuntil - 1), since, until, csince, cuntil,
+        label: "the last 24 hours", cmpLabel: args.compare === "year" ? "the same 24 hours last year" : "the 24 hours before",
+      };
+    }
     if (p in back) {
       from = addDays(today, -back[p]);
       to = today;
@@ -196,7 +221,7 @@ function table(head: string[], rows: (string | number)[][]): string {
 }
 
 function link(c: Call, site: Site, p: Period, extra: Record<string, string> = {}): string {
-  const q = new URLSearchParams({ from: p.from, to: p.to, ...extra });
+  const q = new URLSearchParams({ ...(p.since !== undefined ? { range: "24h" } : { from: p.from, to: p.to }), ...extra });
   return `${c.origin}/s/${site.id}?${q}`;
 }
 const filterParam = (filters: Filter[]): Record<string, string> => (filters.length ? { f: JSON.stringify(filters) } : {});
@@ -298,8 +323,8 @@ const TOOLS: Tool[] = [
       const p = resolvePeriod(site, args);
       const filters = parseFilters(args.filters);
       const [cur, prev] = await Promise.all([
-        internal<{ rows: Json[] }>(c, "POST", `/sites/${site.id}/query`, { from: p.from, to: p.to, metrics: METRICS, filters }),
-        internal<{ rows: Json[] }>(c, "POST", `/sites/${site.id}/query`, { from: p.cfrom, to: p.cto, metrics: METRICS, filters }),
+        internal<{ rows: Json[] }>(c, "POST", `/sites/${site.id}/query`, { ...curRange(p), metrics: METRICS, filters }),
+        internal<{ rows: Json[] }>(c, "POST", `/sites/${site.id}/query`, { ...prevRange(p), metrics: METRICS, filters }),
       ]);
       const a = cur.rows[0] ?? {}, b = prev.rows[0] ?? {};
       const vitals = n0(a.measured_views)
@@ -345,8 +370,8 @@ const TOOLS: Tool[] = [
       if (!metrics.length) throw new ToolError(`for ${dim}, metrics can be: ${allowed.join(", ")}`);
       const limit = Math.min(100, Math.max(1, Number(args.limit) || 20));
       const [cur, prev] = await Promise.all([
-        internal<{ rows: Json[] }>(c, "POST", `/sites/${site.id}/query`, { from: p.from, to: p.to, metrics, groupBy: dim, filters, limit }),
-        internal<{ rows: Json[] }>(c, "POST", `/sites/${site.id}/query`, { from: p.cfrom, to: p.cto, metrics: [metrics[0]], groupBy: dim, filters, limit: 500 }),
+        internal<{ rows: Json[] }>(c, "POST", `/sites/${site.id}/query`, { ...curRange(p), metrics, groupBy: dim, filters, limit }),
+        internal<{ rows: Json[] }>(c, "POST", `/sites/${site.id}/query`, { ...prevRange(p), metrics: [metrics[0]], groupBy: dim, filters, limit: 500 }),
       ]);
       const before = new Map(prev.rows.map((r) => [String(r[dim] ?? ""), r[metrics[0]]]));
       const rows = cur.rows.map((r) => [String(r[dim] ?? "") || "(none)", ...metrics.map((m) => fmt(m, r[m])), change(r[metrics[0]], before.get(String(r[dim] ?? "")))]);
@@ -359,13 +384,13 @@ const TOOLS: Tool[] = [
   {
     name: "timeseries",
     title: "Time series",
-    description: "One metric over time (by hour, day, week or month), with the comparison period alongside and any unusual days the anomaly check flagged.",
+    description: "One metric over time (by 15 minutes, hour, day, week or month), with the comparison period alongside and any unusual days the anomaly check flagged.",
     inputSchema: {
       type: "object",
       properties: {
         site: siteProp,
         metric: { type: "string", enum: METRICS, description: "Default visitors." },
-        grain: { type: "string", enum: ["hour", "day", "week", "month"], description: "Default: hour up to 2 days, day up to 120 days, then week." },
+        grain: { type: "string", enum: ["quarter_hour", "hour", "day", "week", "month"], description: "Default: hour up to 2 days, day up to 120 days, then week. quarter_hour (15 minutes) covers up to 7 days." },
         ...periodProps,
         filters: filtersProp,
       },
@@ -378,11 +403,12 @@ const TOOLS: Tool[] = [
       const filters = parseFilters(args.filters);
       const metric = (METRICS as readonly string[]).includes(String(args.metric)) ? (String(args.metric) as Metric) : "visitors";
       const days = daysBetween(p.from, p.to);
-      const grain = ["hour", "day", "week", "month"].includes(String(args.grain)) ? String(args.grain) : days <= 2 ? "hour" : days <= 120 ? "day" : "week";
+      const grain = ["quarter_hour", "hour", "day", "week", "month"].includes(String(args.grain)) ? String(args.grain) : days <= 2 ? "hour" : days <= 120 ? "day" : "week";
+      if (grain === "quarter_hour" && days > 7) throw new ToolError("15-minute data is limited to 7 days; use hour or a shorter range");
       if (grain === "hour" && days > 14) throw new ToolError("hourly data is limited to 14 days; use day or a shorter range");
       const [cur, prev, an] = await Promise.all([
-        internal<{ rows: Json[] }>(c, "POST", `/sites/${site.id}/query`, { from: p.from, to: p.to, metrics: [metric], groupBy: grain, filters }),
-        internal<{ rows: Json[] }>(c, "POST", `/sites/${site.id}/query`, { from: p.cfrom, to: p.cto, metrics: [metric], groupBy: grain, filters }),
+        internal<{ rows: Json[] }>(c, "POST", `/sites/${site.id}/query`, { ...curRange(p), metrics: [metric], groupBy: grain, filters }),
+        internal<{ rows: Json[] }>(c, "POST", `/sites/${site.id}/query`, { ...prevRange(p), metrics: [metric], groupBy: grain, filters }),
         internal<{ anomalies: { day: string; kind: string; value: number; expected: number }[] }>(c, "GET", `/sites/${site.id}/anomalies?from=${p.from}&to=${p.to}`).catch(() => ({ anomalies: [] })),
       ]);
       const flagged = new Map(an.anomalies.map((a) => [a.day, a.kind]));
@@ -493,7 +519,7 @@ const TOOLS: Tool[] = [
       const g = String(args.group_by ?? "page");
       const groupBy = g === "none" ? null : ["page", "device", "browser", "os", "country", "entry_page", "day"].includes(g) ? g : "page";
       const metrics = ["measured_views", "inp", "lcp", "cls", "ttfb", "fcp"];
-      const r = await internal<{ rows: Json[] }>(c, "POST", `/sites/${site.id}/query`, { from: p.from, to: p.to, metrics, groupBy, filters, limit: Math.min(100, Number(args.limit) || 20) });
+      const r = await internal<{ rows: Json[] }>(c, "POST", `/sites/${site.id}/query`, { ...curRange(p), metrics, groupBy, filters, limit: Math.min(100, Number(args.limit) || 20) });
       const rows = r.rows.filter((x) => n0(x.measured_views) > 0);
       if (!rows.length) {
         return { text: `No Web Vitals measured for ${site.domain} in ${p.label}${describeFilters(filters)}. The QWA tracker measures them on every page view from October 2026 (sites need the current /t.js; Plausible's script doesn't measure them). Try crux for Google's data.` };
@@ -532,9 +558,9 @@ const TOOLS: Tool[] = [
       const metrics = ["measured_views", "inp", "inp_delay", "inp_processing", "inp_presentation"];
       const limit = Math.min(50, Number(args.limit) || 15);
       const [targets, types, overall] = await Promise.all([
-        internal<{ rows: Json[] }>(c, "POST", `/sites/${site.id}/query`, { from: p.from, to: p.to, metrics, groupBy: "inp_target", filters, limit }),
-        internal<{ rows: Json[] }>(c, "POST", `/sites/${site.id}/query`, { from: p.from, to: p.to, metrics: ["measured_views", "inp"], groupBy: "inp_type", filters, limit: 10 }),
-        internal<{ rows: Json[] }>(c, "POST", `/sites/${site.id}/query`, { from: p.from, to: p.to, metrics: ["measured_views", "inp"], filters }),
+        internal<{ rows: Json[] }>(c, "POST", `/sites/${site.id}/query`, { ...curRange(p), metrics, groupBy: "inp_target", filters, limit }),
+        internal<{ rows: Json[] }>(c, "POST", `/sites/${site.id}/query`, { ...curRange(p), metrics: ["measured_views", "inp"], groupBy: "inp_type", filters, limit: 10 }),
+        internal<{ rows: Json[] }>(c, "POST", `/sites/${site.id}/query`, { ...curRange(p), metrics: ["measured_views", "inp"], filters }),
       ]);
       if (!targets.rows.length) {
         return { text: `No interactions measured for ${site.domain} in ${p.label}${describeFilters(filters)}. INP needs the current QWA tracker (/t.js, October 2026 or later) and a browser that reports Event Timing (Chrome, Edge, Firefox; not Safari).` };

@@ -395,9 +395,13 @@ export class SiteDO extends DurableObject<Env> {
     return done;
   }
 
-  /** Visitors per minute for the last `minutes` minutes (oldest first). */
+  /**
+   * Visitors per clock minute for the last `minutes` minutes (oldest first; the last is the minute in progress).
+   * Buckets start on whole minutes so that between polls they only fill up or move along one, rather than
+   * sliding with `now` and reshuffling every bar.
+   */
   private perMinute(now: number, minutes = 30): number[] {
-    const start = now - minutes * 60;
+    const start = (Math.floor(now / 60) - minutes + 1) * 60;
     const rows = this.sql
       .exec<{ m: number; n: number }>(
         // Integer minutes: JS numbers bind as REAL, so without the cast the division gives fractional buckets.

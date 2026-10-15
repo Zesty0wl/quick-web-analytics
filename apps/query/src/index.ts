@@ -6,7 +6,7 @@ import wasmModule from "@ducklings/workers/wasm/duckdb-workers.wasm";
 import { keyRange, TABLES, tablePrefix, type QueryResult, type QuerySpec, type TableName } from "@qwa/shared";
 import { buildSql } from "./sql";
 import { ResultCache } from "./cache";
-import { addDays, dayLabel, hourLabel, localMidnight, offsetSegments } from "./tz";
+import { addDays, dayLabel, hourLabel, localMidnight, offsetAt, offsetSegments, quarterLabel } from "./tz";
 
 interface Env {
   DATA: R2Bucket;
@@ -305,8 +305,9 @@ export class QueryService extends WorkerEntrypoint<Env> {
   private async plan(siteId: number, timezone: string, spec: QuerySpec, live: Live | null, listing: Listings) {
     bucket = this.env.DATA;
     const started = Date.now();
-    const from = localMidnight(timezone, spec.from);
-    const to = localMidnight(timezone, addDays(spec.to, 1));
+    // Exact bounds, when given, replace the dates' midnights (e.g. "the last 24 hours").
+    const from = spec.since ?? localMidnight(timezone, spec.from);
+    const to = spec.until ?? localMidnight(timezone, addDays(spec.to, 1));
     const days = Math.round((to - from) / 86_400);
     const segments = offsetSegments(timezone, from, to);
 
@@ -319,15 +320,15 @@ export class QueryService extends WorkerEntrypoint<Env> {
     const cacheKey = live && !live.tag ? null : await ResultCache.key([siteId, timezone, spec, live ? sql.replaceAll(live.token, live.tag) : sql]);
     const hit = cacheKey ? results.get(cacheKey) : undefined;
     const cached = hit ? { ...hit, meta: { ...hit.meta, ms: Date.now() - started, cached: true } } : null;
-    return { siteId, spec, sql, key, cacheKey, started, timezone, files, cached };
+    return { siteId, spec, sql, key, cacheKey, started, timezone, files, cached, from, to };
   }
 
-  private async execute({ spec, sql, key, cacheKey, started, timezone, files }: Awaited<ReturnType<QueryService["plan"]>>): Promise<QueryResult> {
+  private async execute({ spec, sql, key, cacheKey, started, timezone, files, from, to }: Awaited<ReturnType<QueryService["plan"]>>): Promise<QueryResult> {
     const raw = await exclusive(async () => (await duck(this.env)).query(sql));
 
     let rows = raw.map((r) => Object.fromEntries(Object.entries(r).map(([k, v]) => [k, num(v)]))) as Record<string, string | number | null>[];
-    if (key === "hour") {
-      rows = rows.map((r) => ({ ...r, hour: hourLabel(Number(r.hour)) }));
+    if (key === "hour" || key === "quarter_hour") {
+      rows = fillBuckets(rows, spec, key, timezone, from, to);
     } else if (key === "day" || key === "week" || key === "month") {
       rows = rows.map((r) => ({ ...r, [key]: dayLabel(Number(r[key])) }));
       rows = fillPeriods(rows, spec, key);
@@ -339,6 +340,23 @@ export class QueryService extends WorkerEntrypoint<Env> {
     if (cacheKey) results.set(cacheKey, result);
     return result;
   }
+}
+
+/**
+ * Label hourly or 15-minute rows and add zero rows for empty buckets, up to now (later buckets haven't happened yet,
+ * so they're left off rather than drawn as zeros).
+ */
+function fillBuckets(rows: Record<string, string | number | null>[], spec: QuerySpec, key: "hour" | "quarter_hour", tz: string, from: number, to: number) {
+  const step = key === "hour" ? 3600 : 900;
+  const label = key === "hour" ? hourLabel : quarterLabel;
+  const byKey = new Map(rows.map((r) => [Number(r[key]), r]));
+  const end = Math.min(to, Math.floor(Date.now() / 1000) + 1);
+  const keys = new Set<number>();
+  // Step through UTC time, so a day that changes the clocks gets its 23 or 25 hours.
+  for (let t = Math.floor(from / step) * step; t < end; t += step) keys.add(Math.floor((Math.max(t, from) + offsetAt(tz, Math.max(t, from))) / step));
+  for (const k of byKey.keys()) keys.add(k);
+  const zero = Object.fromEntries(spec.metrics.map((m) => [m, 0]));
+  return [...keys].sort((a, b) => a - b).map((k) => ({ ...(byKey.get(k) ?? zero), [key]: label(k) }));
 }
 
 /** Ensure every period in the range has a row (zeros where there was no traffic). */

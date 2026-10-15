@@ -463,6 +463,11 @@ details[open] summary { margin-bottom: 8px; }
 
 /* Anomaly marks on the chart, site cards and tooltips */
 .chart-mark { position: absolute; transform: translateX(-50%); width: 22px; height: 22px; display: grid; place-items: center; border-radius: 50%; background: var(--color-bg); color: var(--color-text); box-shadow: 0 0 0 1.5px currentColor; pointer-events: none; z-index: 2; }
+/* Clickable: opens the explanation of that day. */
+button.chart-mark { all: unset; position: absolute; transform: translateX(-50%); width: 22px; height: 22px; display: grid; place-items: center; border-radius: 50%; background: var(--color-bg); color: var(--color-text); box-shadow: 0 0 0 1.5px currentColor; z-index: 3; cursor: pointer; }
+button.chart-mark.drop, button.chart-mark.outage { color: var(--neg); }
+button.chart-mark:hover { box-shadow: 0 0 0 2.5px currentColor; }
+button.chart-mark:focus-visible { outline: 2px solid var(--color-accent); outline-offset: 2px; }
 .chart-mark.drop, .chart-mark.outage { color: var(--neg); }
 .chart .tip .an { display: flex; gap: 6px; align-items: flex-start; margin-top: 8px; padding-top: 8px; border-top: 1px solid color-mix(in srgb, var(--color-bg) 25%, transparent); max-width: 260px; white-space: normal; line-height: 1.35; }
 .chart .tip .an svg { flex: none; margin-top: 2px; }
@@ -579,3 +584,26 @@ button.fchip { background: none; color: inherit; font: inherit; font-size: 13px;
 .table.compact .vital { width: auto; margin-left: 4px; }
 .consent { max-width: 620px; }
 .consent h2 { margin: 8px 0 12px; }
+
+/* Unusual-day explanation */
+.unusual .grid-3 { display: grid; grid-template-columns: repeat(auto-fit, minmax(min(100%, 280px), 1fr)); gap: var(--space-6); }
+.barrow .fill.neg { background: color-mix(in srgb, var(--neg) 16%, transparent); }
+.xbars { position: relative; display: flex; align-items: stretch; gap: 3px; height: 200px; margin: 30px 0 var(--space-2); }
+.xbars-col { position: relative; flex: 1; display: flex; align-items: flex-end; justify-content: center; min-width: 0; }
+.xbars-bar { width: 100%; min-height: 1px; background: color-mix(in srgb, var(--tint) 18%, transparent); }
+.xbars-bar.same { background: color-mix(in srgb, var(--tint) 38%, transparent); }
+.xbars-bar.on { background: var(--color-accent); }
+.xbars-bar.overlay { position: absolute; bottom: 0; width: 55%; }
+.xbars-usual { position: absolute; left: 0; right: 0; border-top: 1.5px dashed var(--color-neutral-500); z-index: 1; pointer-events: none; }
+.xbars-usual span { position: absolute; left: 0; bottom: 2px; font-size: 11px; color: var(--muted); background: var(--color-bg); padding: 0 4px; }
+.xbars-col.flagged { all: unset; position: relative; flex: 1; display: flex; align-items: flex-end; justify-content: center; min-width: 0; cursor: pointer; }
+.xbars-col.flagged .chart-mark { top: auto; left: 50%; width: 20px; height: 20px; }
+.xbars-col.flagged:hover .chart-mark { box-shadow: 0 0 0 2.5px currentColor; }
+.xbars-col.flagged:hover .xbars-bar { filter: brightness(.9); }
+.xbars-col.flagged:focus-visible { outline: 2px solid var(--color-accent); outline-offset: 2px; }
+.my-ip { display: flex; flex-wrap: wrap; align-items: center; gap: 6px 12px; margin: -4px 0 6px; }
+.site-settings .my-ip button.btn { background: var(--color-surface); color: var(--color-text); border: 1px solid var(--color-divider); font-size: 13px; font-weight: 700; padding: 6px 12px; }
+.site-settings .my-ip button.btn:hover { border-color: var(--color-text); }
+.site-settings .my-ip button:disabled { opacity: .5; cursor: wait; }
+.linklike, .site-settings .my-ip .linklike { all: unset; cursor: pointer; color: var(--color-accent); text-decoration: underline; font-weight: 600; }
+.linklike:focus-visible { outline: 2px solid var(--color-accent); outline-offset: 2px; }

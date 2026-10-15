@@ -3,7 +3,7 @@
 // breakdowns that explain that metric (events by name, pages, sources…).
 import { useEffect, useMemo, useRef, useState } from "react";
 import type { Dimension, Filter, Metric, TimeGrain } from "@qwa/shared";
-import { useCrossBreakdown, type DayStats, type OverviewSite } from "../api";
+import { useCrossBreakdown, type DayStats, type OverviewRange, type OverviewSite } from "../api";
 import { Busy, busyOf, Delta, deltaInfo, Spark } from "../components/Bits";
 import { Close, Search } from "../components/Icons";
 import { LineChart } from "../components/LineChart";
@@ -71,7 +71,7 @@ const PAGE = 50;
 export function Drill({ metric, sites, dates, periodText, cmpText, url, navigate, onClose }: {
   metric: DrillMetric;
   sites: OverviewSite[];
-  dates: { from: string; to: string; cfrom: string; cto: string };
+  dates: OverviewRange;
   periodText: string;
   cmpText: string;
   url: URL;
@@ -93,13 +93,15 @@ export function Drill({ metric, sites, dates, periodText, cmpText, url, navigate
   // Weeks are counted back from the end of the range, so every point is a whole week; a few days left over at the start
   // are left off the chart (they'd look like a dip). The tables still cover the whole range.
   const buckets = useMemo(() => {
-    const out: { from: string; to: string; cfrom: string; cto: string }[] = [];
+    // The last 24 hours: one exact window.
+    if (dates.since !== undefined) return [dates];
+    const out: OverviewRange[] = [];
     for (let end = span - 1; end - step + 1 >= 0; end -= step) {
       const start = end - step + 1;
       out.unshift({ from: addDays(dates.from, start), to: addDays(dates.from, end), cfrom: addDays(dates.cfrom, start), cto: [addDays(dates.cfrom, end), dates.cto].sort()[0] });
     }
     return out;
-  }, [dates.from, dates.cfrom, dates.cto, span, step]);
+  }, [dates, span, step]);
   const sum = (list: DayStats[], from: string, to: string) => list.reduce((t, d) => (d.day >= from && d.day <= to ? add(t, d) : t), ZERO);
   const chart = useMemo(() => {
     const cur = buckets.map((b) => sites.reduce((t, s) => add(t, sum(s.current, b.from, b.to)), ZERO));

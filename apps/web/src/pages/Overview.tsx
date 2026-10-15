@@ -1,6 +1,6 @@
 import { lazy, Suspense, useMemo, useState } from "react";
 import type { Metric } from "@qwa/shared";
-import { useOverview, type DayStats, type Me, type OverviewSite } from "../api";
+import { useOverview, type DayStats, type Me, type OverviewRange, type OverviewSite } from "../api";
 import { Busy, busyOf, Delta, deltaInfo, MinuteBars, Spark, Spinner, UpdatedAgo } from "../components/Bits";
 import { Alarm, External, Search } from "../components/Icons";
 import { addDays, todayIn } from "../dates";
@@ -30,7 +30,7 @@ interface Row { site: OverviewSite; cur: Totals; prev: Totals; growth: number }
 
 export function Overview({ me, url, navigate, dates, periodText, cmpText }: {
   me: Me; url: URL; navigate: Navigate;
-  dates: { from: string; to: string; cfrom: string; cto: string };
+  dates: OverviewRange;
   periodText: string; cmpText: string;
 }) {
   const q = useOverview(dates);

@@ -125,10 +125,11 @@ against them).
 | `POST auth/token` | — | §2.3, §2.4 |
 | `POST auth/revoke` | — | §2.4 |
 | `GET me` | `GET /api/me` | Adds `device` (id, name) and `instance` (name, version, features: `{ search, speed, push }`) |
-| `GET overview?from&to&cfrom&cto` | `GET /api/overview` | Sites with daily totals, live count, per-minute series, anomalies, cap status |
-| `POST sites/:site/query` | `POST /api/sites/:site/query` | The dashboard's query spec (metrics, groupBy, filters, limit); same validation and limits |
+| `GET overview?from&to&cfrom&cto[&since&until&csince&cuntil]` | `GET /api/overview` | Sites with daily totals, live count, per-minute series, anomalies, cap status. With the optional windows (unix seconds), one total per window instead, keyed by `to` and `cto` (the last 24 hours) |
+| `POST sites/:site/query` | `POST /api/sites/:site/query` | The dashboard's query spec (metrics, groupBy, filters, limit, optional since/until); same validation and limits |
 | `GET sites/:site/realtime` | `GET /api/sites/:site/realtime` | |
 | `GET sites/:site/anomalies?from&to` | `GET /api/sites/:site/anomalies` | |
+| `GET sites/:site/anomalies/:day` | `GET /api/sites/:site/anomalies/:day` | Why the day was unusual: the anomaly, 28 days of figures, the baseline weekdays and the biggest movers; 404 if nothing was flagged |
 | `GET sites/:site/search?from&to&cfrom&cto&page&query` | `GET /api/sites/:site/search` | `status: not-connected / no-property / ok` |
 | `GET sites/:site/search/rows?dim&…` | `GET /api/sites/:site/search/rows` | |
 | `GET sites/:site/speed` | `GET /api/sites/:site/speed` | Read only; "Test now" stays on the web |

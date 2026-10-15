@@ -306,7 +306,7 @@ const num = (v: unknown) => (v === null || v === undefined ? null : Number(v));
 function RealVisitors({ c, strategy, visible }: { c: Ctx; strategy: "mobile" | "desktop"; visible: boolean }) {
   const device = strategy === "mobile" ? "Mobile" : "Desktop";
   const filters = [...c.filters.filter((f) => f[0] !== "device"), ["device", "is", device] as Ctx["filters"][number]];
-  const base = { from: c.from, to: c.to, filters };
+  const base = { ...c.period, filters };
   const totals = useStats(c.site, { ...base, metrics: ["measured_views", "inp", "lcp", "cls", "ttfb", "fcp", "inp_delay", "inp_processing", "inp_presentation"] }, { enabled: visible });
   const targets = useStats(c.site, { ...base, metrics: ["measured_views", "inp", "inp_delay", "inp_processing", "inp_presentation"], groupBy: "inp_target", limit: 6 }, { enabled: visible });
   const pages = useStats(c.site, { ...base, metrics: ["measured_views", "inp", "lcp", "cls"], groupBy: "page", limit: 8 }, { enabled: visible });

@@ -1,7 +1,7 @@
 import { describe, expect, it } from "vitest";
 import { parsePlausiblePayload, PayloadError } from "../src/ingest/plausible";
 import { classify, lookupHost } from "../src/ingest/referrers";
-import { hostnameAllowed, ipBlocked, ipMatches } from "../src/ingest/ip";
+import { hostnameAllowed, ipBlocked, ipMatches, ipv6Network } from "../src/ingest/ip";
 import { legacyFile } from "../src/compat/scripts";
 import { isBot, pagePath } from "../src/ingest/enrich";
 
@@ -71,6 +71,11 @@ describe("ip and hostname rules", () => {
     expect(ipMatches("2a02:c7c:1234:5678::1", "2a02:c7c:1234::/48")).toBe(true);
     expect(ipMatches("2a02:c7d::1", "2a02:c7c::/32")).toBe(false);
     expect(ipBlocked("::1", ["::1"])).toBe(true);
+  });
+  it("gives an IPv6 address's /64, which then matches it", () => {
+    expect(ipv6Network("2a02:c7c:1234:5678:9abc::1")).toBe("2a02:c7c:1234:5678::/64");
+    expect(ipMatches("2a02:c7c:1234:5678:ffff::2", ipv6Network("2a02:c7c:1234:5678:9abc::1")!)).toBe(true);
+    expect(ipv6Network("81.2.69.160")).toBeNull();
   });
   it("ignores mixed families and junk", () => {
     expect(ipMatches("1.2.3.4", "::1")).toBe(false);

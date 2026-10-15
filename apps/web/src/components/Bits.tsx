@@ -58,13 +58,21 @@ export function Spark({ current, comparison, growing, height = 52, width, fit = 
   );
 }
 
-/** 30 per-minute bars: newest in accent, older in ink at 22%. */
+/**
+ * Round up to a step no more than 25% above `n` (1, 1.25, 1.5, 2, 2.5, 3, 4, 5, 6, 8 × 10ⁿ), so a live chart's scale
+ * moves in steps rather than with every new peak, while the tallest bar still fills most of the height.
+ */
+function niceCeiling(n: number): number {
+  const p = 10 ** Math.floor(Math.log10(n));
+  return [1, 1.25, 1.5, 2, 2.5, 3, 4, 5, 6, 8, 10].map((m) => m * p).find((x) => x >= n)!;
+}
+
 /**
  * 30 per-minute bars: newest in accent, older in ink at 22%. With `tip`, hovering a minute (anywhere in its column,
  * so short bars are easy to hit) shows a tooltip with whatever `tip` returns for that minute.
  */
 export function MinuteBars({ values, height, fill, minHeight = 72, tip }: { values: number[]; height?: number; fill?: boolean; minHeight?: number; tip?: (i: number) => React.ReactNode }) {
-  const max = Math.max(1, ...values);
+  const max = niceCeiling(Math.max(1, ...values));
   const [hover, setHover] = useState<number | null>(null);
   const n = values.length;
   return (

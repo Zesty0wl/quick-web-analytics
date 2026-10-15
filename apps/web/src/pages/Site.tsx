@@ -1,10 +1,10 @@
 import { lazy, Suspense, useEffect, useMemo, useState } from "react";
 import { useMutation, useQueryClient } from "@tanstack/react-query";
-import type { Dimension, Filter, Metric, TimeGrain } from "@qwa/shared";
+import { TIME_GRAINS, type Dimension, type Filter, type Metric, type TimeGrain } from "@qwa/shared";
 import { api, useAlerts, useAnomalies, useRealtime, useStats, type Me, type Realtime, type SiteRef } from "../api";
 import { useLiveUpdates } from "../live";
 import { Busy, busyOf, Delta, MinuteBars, Spinner, UpdatedAgo, useInView } from "../components/Bits";
-import { ArrowLeft, Bell, BellOff, Close, External, Search } from "../components/Icons";
+import { ArrowLeft, Bell, BellOff, Close, External, Gear, Search } from "../components/Icons";
 import { LineChart, type ChartMark } from "../components/LineChart";
 import { SiteSwitcher } from "../components/SiteSwitcher";
 import { WorldMap } from "../components/WorldMap";
@@ -12,7 +12,8 @@ import { Section, Seg } from "../components/Section";
 // The Google sections sit well down the page: their code loads separately.
 const SearchSection = lazy(() => import("./Google").then((m) => ({ default: m.SearchSection })));
 const SpeedSection = lazy(() => import("./Google").then((m) => ({ default: m.SpeedSection })));
-import { addDays, comparisonRange, daysBetween, grainsFor, isWeekend, shortDate, weekday, type Compare } from "../dates";
+const Unusual = lazy(() => import("./Unusual").then((m) => ({ default: m.Unusual })));
+import { addDays, comparisonRange, daysBetween, GRAIN_LABELS, overviewRange, grainsFor, isWeekend, shortDate, weekday, type Compare, type Period } from "../dates";
 import { compact, describeAnomaly, DIMENSION_LABELS, displayValue, duration, liveUrl, metricValue, METRIC_LABELS, trackerState, whole } from "../format";
 import { globalParams, linkHandler, readSiteState, withParams, type Navigate, type SiteState } from "../url";
 
@@ -35,7 +36,9 @@ export interface Ctx {
   domain: string;
   from: string;
   to: string;
-  cmp: { from: string; to: string };
+  /** The period with its exact bounds, if any: spread into stats queries. */
+  period: Period;
+  cmp: Period;
   filters: Filter[];
   addFilter: (f: Filter) => void;
 }
@@ -44,8 +47,8 @@ type Row = Record<string, string | number | null>;
 
 /** A breakdown plus the same breakdown for the comparison period (for change columns). */
 function useBreakdown(c: Ctx, dim: Dimension, metrics: Metric[], opts: { limit?: number; enabled: boolean; compare?: boolean }) {
-  const cur = useStats(c.site, { from: c.from, to: c.to, metrics, groupBy: dim, filters: c.filters, limit: opts.limit ?? 10 }, { enabled: opts.enabled });
-  const prev = useStats(c.site, { from: c.cmp.from, to: c.cmp.to, metrics: [metrics[0]], groupBy: dim, filters: c.filters, limit: 300 }, { enabled: opts.enabled && !!opts.compare });
+  const cur = useStats(c.site, { ...c.period, metrics, groupBy: dim, filters: c.filters, limit: opts.limit ?? 10 }, { enabled: opts.enabled });
+  const prev = useStats(c.site, { ...c.cmp, metrics: [metrics[0]], groupBy: dim, filters: c.filters, limit: 300 }, { enabled: opts.enabled && !!opts.compare });
   const prevMap = useMemo(() => new Map((prev.data?.rows ?? []).map((r) => [String(r[dim] ?? ""), Number(r[metrics[0]] ?? 0)])), [prev.data, dim, metrics]);
   const rows = (cur.data?.rows ?? []) as Row[];
   // Old rows against a new comparison (or vice versa) would give wrong changes, so hide them until both are current.
@@ -131,7 +134,7 @@ function AllRows({ c, dim, metrics, mono, onClose }: { c: Ctx; dim: Dimension; m
   useEffect(() => { const t = setTimeout(() => setTerm(text.trim()), 250); return () => clearTimeout(t); }, [text]);
   useEffect(() => { const k = (e: KeyboardEvent) => e.key === "Escape" && onClose(); window.addEventListener("keydown", k); return () => window.removeEventListener("keydown", k); }, [onClose]);
   const filters: Filter[] = term ? [...c.filters, [dim, "contains", term]] : c.filters;
-  const q = useStats(c.site, { from: c.from, to: c.to, metrics, groupBy: dim, filters, limit: 300 });
+  const q = useStats(c.site, { ...c.period, metrics, groupBy: dim, filters, limit: 300 });
   const rows = (q.data?.rows ?? []) as Row[];
   const max = Math.max(1, ...rows.map((r) => Number(r[metrics[0]] ?? 0)));
   return (
@@ -167,7 +170,7 @@ function AllRows({ c, dim, metrics, mono, onClose }: { c: Ctx; dim: Dimension; m
 }
 
 export function Site({ me, url, navigate, dates, compare, periodText, cmpText }: {
-  me: Me; url: URL; navigate: Navigate; dates: { from: string; to: string }; compare: Compare; periodText: string; cmpText: string;
+  me: Me; url: URL; navigate: Navigate; dates: Period; compare: Compare; periodText: string; cmpText: string;
 }) {
   const state = readSiteState(url);
   const site = me.sites.find((s) => s.id === state?.siteId);
@@ -180,16 +183,18 @@ export function Site({ me, url, navigate, dates, compare, periodText, cmpText }:
       </div>
     );
   }
+  const unusual = url.pathname.match(/^\/s\/\d+\/unusual\/(\d{4}-\d{2}-\d{2})$/);
+  if (unusual) return <Unusual site={site} day={unusual[1]} url={url} navigate={navigate} />;
   return <Detail key={site.id} admin={me.user.role === "admin"} sites={me.sites} site={site} state={state} url={url} navigate={navigate} dates={dates} compare={compare} periodText={periodText} cmpText={cmpText} />;
 }
 
 function Detail({ admin, sites, site, state, url, navigate, dates, compare, periodText, cmpText }: {
-  admin: boolean; sites: Me["sites"]; site: Me["sites"][number]; state: SiteState; url: URL; navigate: Navigate; dates: { from: string; to: string }; compare: Compare; periodText: string; cmpText: string;
+  admin: boolean; sites: Me["sites"]; site: Me["sites"][number]; state: SiteState; url: URL; navigate: Navigate; dates: Period; compare: Compare; periodText: string; cmpText: string;
 }) {
   const { from, to } = dates;
-  const { allowed, auto } = grainsFor(from, to);
+  const { allowed, auto } = grainsFor(dates);
   const grain: TimeGrain = state.grain && allowed.includes(state.grain) ? state.grain : auto;
-  const cmp = comparisonRange(from, to, compare);
+  const cmp = comparisonRange(dates, compare, site.timezone);
   const filters = state.filters;
   const span = daysBetween(from, to);
 
@@ -198,13 +203,13 @@ function Detail({ admin, sites, site, state, url, navigate, dates, compare, peri
   const addFilter = (f: Filter) => setFilters([...filters.filter((x) => x[0] !== f[0]), f]);
   const zoomTo = (a: string, b: string) => set({ range: null, from: a, to: b, g: null });
   const ref = useMemo(() => ({ id: site.id, timezone: site.timezone }), [site.id, site.timezone]);
-  const c: Ctx = { siteId: site.id, site: ref, domain: site.domain, from, to, cmp, filters, addFilter };
+  const c: Ctx = { siteId: site.id, site: ref, domain: site.domain, from, to, period: dates, cmp, filters, addFilter };
 
   const seriesMetrics = ENGAGEMENT.includes(state.metric) ? [...SERIES, state.metric] : SERIES;
-  const totals = useStats(ref, { from, to, metrics: TILES, filters }, { freshness: "fast" });
-  const cmpTotals = useStats(ref, { from: cmp.from, to: cmp.to, metrics: TILES, filters });
-  const series = useStats(ref, { from, to, metrics: seriesMetrics, groupBy: grain, filters }, { freshness: "fast" });
-  const cmpSeries = useStats(ref, { from: cmp.from, to: cmp.to, metrics: seriesMetrics, groupBy: grain, filters });
+  const totals = useStats(ref, { ...dates, metrics: TILES, filters }, { freshness: "fast" });
+  const cmpTotals = useStats(ref, { ...cmp, metrics: TILES, filters });
+  const series = useStats(ref, { ...dates, metrics: seriesMetrics, groupBy: grain, filters }, { freshness: "fast" });
+  const cmpSeries = useStats(ref, { ...cmp, metrics: seriesMetrics, groupBy: grain, filters });
   const live = useLiveUpdates(ref);
   const rt = useRealtime(site.id, live === "down");
   const anomalies = useAnomalies(site.id, from, to);
@@ -220,19 +225,19 @@ function Detail({ admin, sites, site, state, url, navigate, dates, compare, peri
   const cmpRows = grainOf(cmpSeries.data?.rows ?? []) === dataGrain ? cmpSeries.data!.rows : [];
   // Anomalies (daily) placed on whichever bucket contains their day; none on the hourly view.
   const marks: ChartMark[] = useMemo(() => {
-    if (dataGrain === "hour") return [];
+    if (dataGrain === "hour" || dataGrain === "quarter_hour") return [];
     return (anomalies.data?.anomalies ?? []).flatMap((a) => {
       const index = keys.findIndex((k, i) =>
         dataGrain === "day" ? k === a.day : dataGrain === "week" ? k <= a.day && a.day < (keys[i + 1] ?? addDays(k, 7)) : k.slice(0, 7) === a.day.slice(0, 7),
       );
-      return index < 0 ? [] : [{ index, kind: a.kind, text: dataGrain === "day" ? describeAnomaly(a) : `${weekday(a.day)} ${shortDate(a.day)}: ${describeAnomaly(a)}` }];
+      return index < 0 ? [] : [{ index, kind: a.kind, day: a.day, rank: Math.abs(a.score ?? 0), text: dataGrain === "day" ? describeAnomaly(a) : `${weekday(a.day)} ${shortDate(a.day)}: ${describeAnomaly(a)}` }];
     });
   }, [anomalies.data, keys, dataGrain]);
   const chartBusy = (!!totals.data && busyOf(totals, cmpTotals)) || (rows.length > 0 && busyOf(series, cmpSeries));
 
   const onBucket = (i: number) => {
     const k = keys[i];
-    if (!k || dataGrain === "hour" || series.isPlaceholderData) return;
+    if (!k || dataGrain === "hour" || dataGrain === "quarter_hour" || series.isPlaceholderData) return;
     const today = new Date().toISOString().slice(0, 10);
     if (dataGrain === "day") zoomTo(k, k);
     else if (dataGrain === "week") zoomTo(k, [addDays(k, 6), today].sort()[0]);
@@ -242,6 +247,7 @@ function Detail({ admin, sites, site, state, url, navigate, dates, compare, peri
     }
   };
   const home = `/${globalParams(url)}`;
+  const settings = `/admin?tab=sites&site=${site.id}&view=settings`;
 
   return (
     <div>
@@ -249,13 +255,18 @@ function Detail({ admin, sites, site, state, url, navigate, dates, compare, peri
         <div className="titles">
           <a className="btn btn-ghost" href={home} onClick={linkHandler(navigate, home)} style={{ paddingLeft: 0, marginBottom: "var(--space-2)", fontSize: 13 }}><ArrowLeft />All sites</a>
           <div style={{ display: "flex", alignItems: "center", gap: "var(--space-3)", flexWrap: "wrap" }}>
-            <h1 style={{ margin: 0 }}><SiteSwitcher variant="title" sites={sites} currentId={site.id} url={url} navigate={navigate} dates={{ from, to, cfrom: cmp.from, cto: cmp.to }} /></h1>
+            <h1 style={{ margin: 0 }}><SiteSwitcher variant="title" sites={sites} currentId={site.id} url={url} navigate={navigate} dates={overviewRange(dates, cmp)} /></h1>
             <a href={`https://${site.domain}`} target="_blank" rel="noopener noreferrer" title={`Open ${site.domain}`} aria-label={`Open ${site.domain}`} style={{ display: "inline-flex", color: "var(--muted)" }}><External size={18} /></a>
             <span className="tag tag-neutral">{site.timezone}</span>
             {admin && rt.data && "qwaLastAt" in rt.data && <TrackerTag rt={rt.data} />}
           </div>
           <div className="sub">{site.domain} · {periodText} compared with {cmpText}</div>
         </div>
+        {admin && (
+          <a className="btn btn-secondary bell" href={settings} onClick={linkHandler(navigate, settings)} title={`Change ${site.domain}'s timezone, allowed hostnames, blocked IPs and daily limit`}>
+            <Gear /><span style={{ fontSize: 13, fontWeight: 600 }}>Settings</span>
+          </a>
+        )}
         <AlertBell siteId={site.id} />
         <div className="livebox" aria-live="polite">
           <span className={rt.data?.visitors5m ? "livedot" : "livedot off"} aria-hidden />
@@ -310,12 +321,12 @@ function Detail({ admin, sites, site, state, url, navigate, dates, compare, peri
           <span style={{ marginLeft: "auto" }} />
           <Seg<TimeGrain>
             value={grain}
-            options={(["hour", "day", "week", "month"] as TimeGrain[]).filter((g) => allowed.includes(g)).map((g) => ({ id: g, label: g === "hour" ? "Hourly" : g === "day" ? "Daily" : g === "week" ? "Weekly" : "Monthly" }))}
+            options={allowed.map((g) => ({ id: g, label: GRAIN_LABELS[g] }))}
             onChange={(g) => set({ g: g === auto ? null : g }, { replace: true, keepScroll: true })}
           />
         </div>
         {rows.length > 0 ? (
-          <LineChart keys={keys} current={rows.map((r) => Number(r[state.metric] ?? 0))} compareKeys={cmpRows.map((r) => String(r[dataGrain]))} compare={cmpRows.map((r) => Number(r[state.metric] ?? 0))} metric={state.metric} grain={dataGrain} onSelect={dataGrain === "hour" ? undefined : onBucket} marks={marks} />
+          <LineChart keys={keys} current={rows.map((r) => Number(r[state.metric] ?? 0))} compareKeys={cmpRows.map((r) => String(r[dataGrain]))} compare={cmpRows.map((r) => Number(r[state.metric] ?? 0))} metric={state.metric} grain={dataGrain} onSelect={dataGrain === "hour" || dataGrain === "quarter_hour" ? undefined : onBucket} marks={marks} onMark={(m) => m.day && navigate(`/s/${site.id}/unusual/${m.day}${globalParams(url)}`)} />
         ) : (
           <ChartPlaceholder busy={busyOf(series)} error={series.error as Error | null} />
         )}
@@ -327,8 +338,8 @@ function Detail({ admin, sites, site, state, url, navigate, dates, compare, peri
         <div className="rt-grid">
           <div className="wide">
             <WorldMap data={(rt.data?.countries ?? []).map((x) => ({ code: x.name, visitors: x.visitors }))} caption="Live visitors by country · last 30 minutes" onPick={(code) => addFilter(["country", "is", code])} />
-            {/* Fills whatever height the column has left beside the live lists. */}
-            <MinuteBars values={rt.data?.perMinute ?? new Array(30).fill(0)} fill minHeight={64} />
+            {/* A fixed height: filling the column would make it grow and shrink with the live lists beside it. */}
+            <MinuteBars values={rt.data?.perMinute ?? new Array(30).fill(0)} height={110} />
             <div className="axis-row"><span>Visitors per minute · 30 min ago</span><span>now</span></div>
           </div>
           <div style={{ display: "flex", flexDirection: "column", gap: "var(--space-6)", minWidth: 0 }}>
@@ -572,14 +583,14 @@ function GeoSection({ c }: { c: Ctx }) {
 
 /** The time grain a series result was fetched with (its rows carry that column). */
 function grainOf(rows: Row[]): TimeGrain | undefined {
-  return (["hour", "day", "week", "month"] as TimeGrain[]).find((g) => rows[0] && g in rows[0]);
+  return TIME_GRAINS.find((g) => rows[0] && g in rows[0]);
 }
 
 const DAYS = ["Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"];
 
 function HeatmapSection({ c }: { c: Ctx }) {
   const [ref, seen, near] = useInView<HTMLElement>();
-  const q = useStats(c.site, { from: c.from, to: c.to, metrics: ["visitors"], groupBy: "weekhour", filters: c.filters }, { enabled: near });
+  const q = useStats(c.site, { ...c.period, metrics: ["visitors"], groupBy: "weekhour", filters: c.filters }, { enabled: near });
   // Average per occurrence of each weekday in the range.
   const occurrences = useMemo(() => {
     const n = new Array(7).fill(0);
