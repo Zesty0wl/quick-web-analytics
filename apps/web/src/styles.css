@@ -620,3 +620,18 @@ button.anomaly-flag:focus-visible { outline: 2px solid var(--color-accent); outl
 .unusual-days-list { display: flex; flex-wrap: wrap; gap: 6px; align-items: center; }
 .unusual-days .anomaly-flag { font-size: 12px; padding: 4px 10px; }
 .unusual-days .anomaly-flag.current { box-shadow: 0 0 0 2px currentColor; cursor: default; }
+.unusual-summary { display: grid; gap: 8px; max-width: 75ch; font-size: 16px; line-height: 1.5; }
+.unusual-summary p { margin: 0; }
+.wdbars .xbars { height: 180px; gap: 14px; }
+.wdbars .xbars-col { position: relative; }
+.wdbars-v { position: absolute; left: 0; right: 0; text-align: center; font-size: 12px; font-weight: 700; font-variant-numeric: tabular-nums; }
+.wdbars-mark { position: absolute; left: 50%; transform: translateX(-50%); }
+.wdbars-labels { display: flex; gap: 14px; font-size: 12px; color: var(--muted); }
+.wdbars-labels span { flex: 1; text-align: center; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.wdbars-labels .current { color: var(--color-text); font-weight: 700; }
+.xbars-col.this .chart-mark { position: absolute; left: 50%; transform: translateX(-50%); width: 20px; height: 20px; }
+.xbars-days { display: flex; gap: 3px; font-size: 11px; color: var(--muted); }
+.xbars-days span { flex: 1; min-width: 0; text-align: center; white-space: nowrap; overflow: visible; }
+.xbars-days span:first-child { text-align: left; }
+.xbars-days span:last-child { text-align: right; }
+.xbars-days .this { color: var(--color-text); font-weight: 700; }

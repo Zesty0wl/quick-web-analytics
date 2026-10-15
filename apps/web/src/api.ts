@@ -335,6 +335,8 @@ export interface AnomalyExplained {
     /** The 28 days ending on the unusual day, and the same weekday over the six weeks before (the baseline). */
     history: DayFigures[];
     baseline: DayFigures[];
+    /** Two weeks either side of the day, up to yesterday. */
+    around?: DayFigures[];
     lastEventAt?: number | null;
     intraday?: { hour: number; window: "today" | "last3h"; history: number[]; hours?: { today: number[]; usual: number[] } };
   };

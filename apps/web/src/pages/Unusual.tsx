@@ -1,5 +1,5 @@
 // Why a day was unusual: opened from an alarm on a site's chart. The same analysis as the alert emails.
-import { useAnomalies, useAnomalyExplained, type Anomaly, type DayFigures, type Me, type Mover } from "../api";
+import { useAnomalies, useAnomalyExplained, type Anomaly, type AnomalyExplained, type DayFigures, type Me, type Mover } from "../api";
 import { Spinner } from "../components/Bits";
 import { Alarm, ArrowLeft } from "../components/Icons";
 import { longDate, shortDate, weekday, type Period } from "../dates";
@@ -16,9 +16,9 @@ export function Unusual({ site, day, url, navigate, period, periodText }: {
   const q = useAnomalyExplained(site.id, day);
   // Every unusual day in the selected range, to step between them.
   const inRange = useAnomalies(site.id, period.from, period.to);
-  // Other unusual days in the four weeks shown, so they're marked on the chart and one click away.
-  const first = q.data?.detail.history[0]?.day;
-  const around = useAnomalies(site.id, first ?? day, day);
+  // Unusual days in the fortnight either side, so they're marked on that chart and one click away.
+  const ctx = q.data ? (q.data.detail.around?.length ? q.data.detail.around : q.data.detail.history) : [];
+  const around = useAnomalies(site.id, ctx[0]?.day ?? day, ctx[ctx.length - 1]?.day ?? day);
   const openDay = (d: string) => navigate(`/s/${site.id}/unusual/${d}${globalParams(url)}`);
   const back = `/s/${site.id}${globalParams(url)}`;
   // The site's page for just that day, optionally filtered to one source or page.
@@ -96,30 +96,53 @@ export function Unusual({ site, day, url, navigate, period, periodText }: {
       </div>
 
       <section className="section">
-        {i?.hours ? (
-          <>
-            <div className="section-head">
-              <h3>Visits by hour</h3>
-              <span className="muted">
-                {i.hours.today.length < 24 ? "Today" : `${weekday(a.day)} ${shortDate(a.day)}`} against a usual {weekday(a.day)} (shaded) · flagged hours in colour
-              </span>
-            </div>
-            <HourBars today={i.hours.today} usual={i.hours.usual} flagged={[i.window === "today" ? 0 : i.hour - 3, i.hour]} />
-          </>
-        ) : (
-          <>
-            <div className="section-head"><h3>The last four weeks</h3><span className="muted">Visitors per day · {weekday(a.day)}s compared against are shaded · other unusual days have an alarm: click one to see why</span></div>
-            <DayBars history={d.history} baseline={d.baseline.map((b) => b.day)} day={a.day} expected={i ? undefined : a.expected} flagged={first ? around.data?.anomalies ?? [] : []} onPick={openDay} />
-          </>
-        )}
+        <div className="section-head"><h3>What happened</h3></div>
+        <div className="unusual-summary">
+          {summary(a, i, movers, hourly).map((p, k) => <p key={k}>{p}</p>)}
+        </div>
+      </section>
+
+      <section className="section">
+        <div className="section-head">
+          <h3>Why it was flagged</h3>
+          <span className="muted">
+            {i ? `${hourly ? `Visits ${hourly}` : "Visits"} on this ${weekday(a.day)} against the same hours of the ${i.history.length} before` : `Visitors on this ${weekday(a.day)} against the ${d.baseline.length} before`} · dashed line: the usual, ~{whole(a.expected)} (their median)
+          </span>
+        </div>
+        <WeekdayBars
+          bars={[
+            ...(i ? i.history.map((v, k) => ({ label: `${i.history.length - k} wk ago`, value: v })) : d.baseline.map((b) => ({ label: shortDate(b.day), value: b.visitors }))),
+            { label: shortDate(a.day), value: a.value, current: true },
+          ]}
+          expected={a.expected}
+          kind={a.kind}
+        />
+      </section>
+
+      {i?.hours && (
+        <section className="section">
+          <div className="section-head">
+            <h3>Hour by hour</h3>
+            <span className="muted">
+              {i.hours.today.length < 24 ? "Today" : `${weekday(a.day)} ${shortDate(a.day)}`} against a usual {weekday(a.day)} (shaded) · flagged hours in colour
+            </span>
+          </div>
+          <HourBars today={i.hours.today} usual={i.hours.usual} flagged={[i.window === "today" ? 0 : i.hour - 3, i.hour]} />
+        </section>
+      )}
+
+      <section className="section">
+        <div className="section-head"><h3>Around it</h3><span className="muted">Visitors per day, two weeks either side · unusual days have an alarm: click one to see why</span></div>
+        <DayBars history={ctx} baseline={d.baseline.map((b) => b.day)} day={a.day} kind={a.kind} flagged={around.data?.anomalies ?? []} onPick={openDay} />
       </section>
 
       {a.kind === "outage" ? (
         <section className="section">
           <div className="section-head"><h3>What to check</h3></div>
           <p>
-            {d.lastEventAt && Date.now() / 1000 - d.lastEventAt < 15 * 60
-              ? <>Visits are coming in again: the latest arrived at {new Date(d.lastEventAt * 1000).toLocaleTimeString("en-GB", { hour: "2-digit", minute: "2-digit" })}. If it happens again, check that</>
+            {/* Resumed: an event in the last 15 minutes, or any since the end of that day. */}
+            {d.lastEventAt && (Date.now() / 1000 - d.lastEventAt < 15 * 60 || d.lastEventAt * 1000 > Date.parse(`${a.day}T23:59:59Z`) + 14 * 3_600_000)
+              ? <>Visits have come in since: the latest arrived {new Date(d.lastEventAt * 1000).toLocaleString("en-GB", { weekday: "short", day: "numeric", month: "short", hour: "2-digit", minute: "2-digit" })}. If it happens again, check that</>
               : <>
                   {d.lastEventAt ? <>The last event arrived {new Date(d.lastEventAt * 1000).toLocaleString("en-GB", { weekday: "short", day: "numeric", month: "short", hour: "2-digit", minute: "2-digit" })}. </> : null}
                   Visits stopped or nearly stopped. Check that
@@ -130,7 +153,7 @@ export function Unusual({ site, day, url, navigate, period, periodText }: {
         </section>
       ) : (
         <section className="section">
-          <div className="section-head"><h3>Where the change came from</h3><span className="muted">{i && hourly ? `Visitors ${hourly} against usual for those hours` : "Visitors that day against usual"}</span></div>
+          <div className="section-head"><h3>Where the change came from</h3><span className="muted">{i && hourly ? `Visitors ${hourly} against the same hours of a usual ${weekday(a.day)}` : `Visitors that day against a usual ${weekday(a.day)} (the average of the ${d.baseline.length || 6} before)`} · biggest changes first</span></div>
           {!movers ? (
             <p className="muted">The breakdown couldn't be worked out just now. Try again in a minute.</p>
           ) : !anyMovers ? (
@@ -159,6 +182,65 @@ export function Unusual({ site, day, url, navigate, period, periodText }: {
           </div>
         </section>
       )}
+    </div>
+  );
+}
+
+const signed = (n: number) => `${n >= 0 ? "+" : "−"}${whole(Math.abs(n))}`;
+const fullWeekday = (d: string) => new Date(`${d}T12:00:00Z`).toLocaleDateString("en-GB", { weekday: "long", timeZone: "UTC" });
+
+/** The page's answer in words: how far off usual, where the change came from, and how much of it that explains. */
+function summary(a: Anomaly, i: AnomalyExplained["detail"]["intraday"], movers: AnomalyExplained["movers"], hourly: string | null): string[] {
+  const unit = i ? "visits" : "visitors";
+  const when = i && hourly ? `${hourly} on ${fullWeekday(a.day)} ${shortDate(a.day)}` : `on ${fullWeekday(a.day)} ${shortDate(a.day)}`;
+  const diff = a.value - a.expected;
+  const ratio = a.expected ? a.value / a.expected : 0;
+  const out: string[] = [];
+  if (a.kind === "outage") {
+    out.push(`${a.value === 0 ? "No" : `Only ${whole(a.value)}`} ${unit} ${when}, when a usual ${fullWeekday(a.day)} has about ${whole(a.expected)}. That usually means the tracker stopped reporting rather than people staying away.`);
+    return out;
+  }
+  out.push(
+    a.kind === "spike"
+      ? `${whole(a.value)} ${unit} ${when}, against about ${whole(a.expected)} on a usual ${fullWeekday(a.day)}: ${whole(diff)} more than usual${ratio >= 2 ? ` (${ratio.toFixed(1)}×)` : ""}.`
+      : `${whole(a.value)} ${unit} ${when}, against about ${whole(a.expected)} on a usual ${fullWeekday(a.day)}: ${whole(-diff)} fewer than usual (${Math.round((1 - ratio) * 100)}% down).`,
+  );
+  if (!movers) return out;
+  const fmt = (rows: Mover[]) => rows.slice(0, 3).map((m) => `${m.name || "(none)"} (${signed(m.value - m.usual)})`).join(", ");
+  const parts = [
+    movers.countries.length ? `by country, ${fmt(movers.countries)}` : "",
+    movers.sources.length ? `by source, ${fmt(movers.sources)}` : "",
+    movers.pages.length ? `by page, ${fmt(movers.pages)}` : "",
+  ].filter(Boolean);
+  if (!parts.length) {
+    out.push("No single source, page or country stands out: the change was spread thinly across the site's traffic.");
+    return out;
+  }
+  out.push(`${a.kind === "spike" ? "Where the extra came from" : "Where the fall was"}: ${parts.join("; ")}.`);
+  // Countries and sources each split visitors into separate groups, so their changes add up towards the total.
+  const covered = Math.max(...[movers.countries, movers.sources].map((rows) => rows.reduce((n, m) => n + Math.abs(m.value - m.usual), 0)));
+  if (Math.abs(diff) > 0 && covered < Math.abs(diff) * 0.5) {
+    out.push(`Those account for only about ${whole(covered)} of the ${whole(Math.abs(diff))}: the rest came in ones and twos, with no other source, page or country changing by more than 2.`);
+  }
+  return out;
+}
+
+/** This weekday against the ones it was judged by: the usual dashed, this one in colour with its alarm. */
+function WeekdayBars({ bars, expected, kind }: { bars: { label: string; value: number; current?: boolean }[]; expected: number; kind: Anomaly["kind"] }) {
+  const max = Math.max(1, expected, ...bars.map((b) => b.value));
+  return (
+    <div className="wdbars">
+      <div className="xbars" role="img" aria-label="This day against the same weekdays before it">
+        <div className="xbars-usual" style={{ bottom: `${(expected / max) * 100}%` }} />
+        {bars.map((b, k) => (
+          <div key={k} className="xbars-col" title={`${b.label}: ${whole(b.value)}`}>
+            <span className="wdbars-v" style={{ bottom: `calc(${(b.value / max) * 100}% + 4px)` }}>{whole(b.value)}</span>
+            <div className={b.current ? "xbars-bar on" : "xbars-bar same"} style={{ height: `${(b.value / max) * 100}%` }} />
+            {b.current && <span className={`chart-mark ${kind} wdbars-mark`} style={{ bottom: `calc(${(b.value / max) * 100}% + 24px)` }}><Alarm size={12} /></span>}
+          </div>
+        ))}
+      </div>
+      <div className="wdbars-labels">{bars.map((b, k) => <span key={k} className={b.current ? "current" : undefined}>{b.label}</span>)}</div>
     </div>
   );
 }
@@ -205,7 +287,8 @@ function MoverTable({ title, rows, up, href, navigate }: { title: string; rows: 
             <div className={up ? "fill accent" : "fill neg"} style={{ top: 3, bottom: 3, width: `${(r.value / max) * 100}%` }} />
             <span style={{ overflow: "hidden", textOverflow: "ellipsis" }} title={r.name}>{r.name || "(none)"}</span>
             <span className="v" title={`${whole(r.value)} visitors, usually about ${whole(r.usual)}`}>
-              {whole(r.value)} <span className="muted">vs ~{whole(r.usual)}</span> <b style={up ? undefined : { color: "var(--neg)" }}>{r.change}</b>
+              <b style={up ? undefined : { color: "var(--neg)" }}>{signed(r.value - r.usual)}</b>{" "}
+              <span className="muted">{whole(r.value)} vs ~{whole(r.usual)} · {r.change}</span>
             </span>
           </>
         );
@@ -219,34 +302,45 @@ function MoverTable({ title, rows, up, href, navigate }: { title: string; rows: 
 }
 
 /**
- * 28 days of visitors: the unusual day in accent, the weekdays it was compared with shaded, usual dashed. Other
- * unusual days carry an alarm and open their own explanation.
+ * Daily visitors around the day: the day itself in colour with its alarm (it's the one this page explains), the
+ * weekdays it was compared against shaded, and other unusual days with an alarm that opens their own explanation.
  */
-function DayBars({ history, baseline, day, expected, flagged, onPick }: {
-  history: DayFigures[]; baseline: string[]; day: string; expected?: number; flagged: Anomaly[]; onPick: (day: string) => void;
+function DayBars({ history, baseline, day, kind, flagged, onPick }: {
+  history: DayFigures[]; baseline: string[]; day: string; kind: Anomaly["kind"]; flagged: Anomaly[]; onPick: (day: string) => void;
 }) {
-  const max = Math.max(1, expected ?? 0, ...history.map((h) => h.visitors));
+  const max = Math.max(1, ...history.map((h) => h.visitors));
   const same = new Set(baseline);
-  // The most unusual flag on each day (a day can have the nightly and the hourly check's).
+  // The most unusual flag on each other day (a day can have the nightly and the hourly check's).
   const flags = new Map<string, Anomaly>();
   for (const f of flagged) if (f.day !== day && Math.abs(f.score ?? 0) >= Math.abs(flags.get(f.day)?.score ?? -1)) flags.set(f.day, f);
+  const at = (v: number) => `calc(${(v / max) * 100}% + 6px)`;
   return (
     <>
-      <div className="xbars" role="img" aria-label="Visitors per day over the last four weeks">
-        {expected !== undefined && <div className="xbars-usual" style={{ bottom: `${(expected / max) * 100}%` }}><span>usual ~{whole(expected)}</span></div>}
+      <div className="xbars" role="img" aria-label="Visitors per day, two weeks either side">
         {history.map((h) => {
           const f = flags.get(h.day);
-          const bar = <div className={h.day === day ? "xbars-bar on" : same.has(h.day) ? "xbars-bar same" : "xbars-bar"} style={{ height: `${(h.visitors / max) * 100}%` }} />;
-          if (!f) return <div key={h.day} className="xbars-col" title={`${weekday(h.day)} ${shortDate(h.day)}: ${whole(h.visitors)} visitors`}>{bar}</div>;
+          const label = `${weekday(h.day)} ${shortDate(h.day)}: ${whole(h.visitors)} visitors`;
+          if (h.day === day) {
+            return (
+              <div key={h.day} className="xbars-col this" title={`${label} (the day explained here)`}>
+                <div className="xbars-bar on" style={{ height: `${(h.visitors / max) * 100}%` }} />
+                <span className={`chart-mark ${kind}`} style={{ bottom: at(h.visitors) }}><Alarm size={12} /></span>
+              </div>
+            );
+          }
+          const bar = <div className={same.has(h.day) ? "xbars-bar same" : "xbars-bar"} style={{ height: `${(h.visitors / max) * 100}%` }} />;
+          if (!f) return <div key={h.day} className="xbars-col" title={label}>{bar}</div>;
           return (
             <button key={h.day} className="xbars-col flagged" onClick={() => onPick(h.day)} title={`${weekday(h.day)} ${shortDate(h.day)}: ${describeAnomaly(f)}. Click to see why`}>
               {bar}
-              <span className={`chart-mark ${f.kind}`} style={{ bottom: `calc(${(h.visitors / max) * 100}% + 6px)` }}><Alarm size={12} /></span>
+              <span className={`chart-mark ${f.kind}`} style={{ bottom: at(h.visitors) }}><Alarm size={12} /></span>
             </button>
           );
         })}
       </div>
-      <div className="axis-row"><span>{history[0] ? shortDate(history[0].day) : ""}</span><span>{shortDate(day)}</span></div>
+      <div className="xbars-days">
+        {history.map((h) => <span key={h.day} className={h.day === day ? "this" : undefined}>{h.day === day || h === history[0] || h === history[history.length - 1] ? shortDate(h.day) : ""}</span>)}
+      </div>
     </>
   );
 }

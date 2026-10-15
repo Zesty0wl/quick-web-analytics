@@ -14,7 +14,7 @@ export interface Driver {
   name: string;
   /** Visitors from this source/page/country on the unusual day. */
   value: number;
-  /** Its usual daily visitors over the previous four weeks. */
+  /** Its usual visitors: the average over the same weekdays the anomaly was judged against (for an hourly alert, the same hours of them). */
   usual: number;
 }
 
@@ -29,6 +29,8 @@ export interface AlertDetail {
   history: DayFigures[];
   /** The same weekday over the previous six weeks (oldest first), the baseline. */
   baseline: DayFigures[];
+  /** Daily figures two weeks either side of the day, up to yesterday (for the dashboard's explanation page). */
+  around?: DayFigures[];
   drivers?: { sources: Driver[]; pages: Driver[]; countries: Driver[] };
   /** Unix seconds of the most recent event the site's Durable Object has seen (outages). */
   lastEventAt?: number | null;

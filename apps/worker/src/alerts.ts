@@ -59,31 +59,46 @@ export async function alertDetail(
   env: Env,
   site: Site,
   a: { day: string; kind: Anomaly["kind"]; value: number; expected: number },
-  /** `window`: for hourly alerts, the exact span (unix seconds) the movers count, against usual scaled by `fraction`. */
-  opts: { fraction?: number; window?: { since: number; until: number } } = {},
+  /** `window`: for hourly alerts, the hours (unix seconds) the movers count, on the day and on each baseline day. */
+  opts: { window?: { since: number; until: number } } = {},
 ): Promise<AlertDetail> {
   const { results } = await env.DB.prepare(
     "SELECT day, visitors, visits, pageviews, bounces, duration_sum FROM daily_stats WHERE site_id = ? AND day >= ? AND day <= ? ORDER BY day",
   )
-    .bind(site.id, addDays(a.day, -42), a.day)
+    .bind(site.id, addDays(a.day, -42), addDays(a.day, 14))
     .all<DayFigures>();
   const byDay = new Map(results.map((r) => [r.day, r]));
   const empty = (day: string): DayFigures => ({ day, visitors: 0, visits: 0, pageviews: 0, bounces: 0, duration_sum: 0 });
   const history = Array.from({ length: 28 }, (_, i) => byDay.get(addDays(a.day, i - 27)) ?? empty(addDays(a.day, i - 27)));
   const baseline = [6, 5, 4, 3, 2, 1].map((w) => byDay.get(addDays(a.day, -7 * w))).filter((d): d is DayFigures => Boolean(d));
+  // Two weeks either side, as far as closed days go (the day itself always included).
+  const yesterday = addDays(todayIn(site.timezone), -1);
+  const around = Array.from({ length: 29 }, (_, i) => addDays(a.day, i - 14))
+    .filter((d) => d <= yesterday || d === a.day)
+    .map((d) => byDay.get(d) ?? empty(d));
 
   let drivers: AlertDetail["drivers"];
   if (a.kind !== "outage") {
     try {
       const regions = new Intl.DisplayNames(["en"], { type: "region" });
+      // "Usual" is the average over the same weekdays the anomaly was judged against (those with traffic), and for an
+      // hourly alert over the same hours of them, so the movers add up to the headline's change.
+      const usualDays = baseline.length ? baseline.map((b) => b.day) : [6, 5, 4, 3, 2, 1].map((w) => addDays(a.day, -7 * w));
+      const midnight = localMidnight(site.timezone, a.day);
+      const span = (d: string) => {
+        if (!opts.window) return {};
+        const m = localMidnight(site.timezone, d);
+        return { since: m + (opts.window.since - midnight), until: m + (opts.window.until - midnight) };
+      };
       const movers = async (dim: "source" | "page" | "country") => {
         const spec = { metrics: ["visitors" as const], groupBy: dim, limit: 300 };
-        const [day, window] = await Promise.all([
+        const [day, ...before] = await Promise.all([
           env.QUERY.query(site.id, site.timezone, { ...spec, from: a.day, to: a.day, ...opts.window }),
-          env.QUERY.query(site.id, site.timezone, { ...spec, from: addDays(a.day, -28), to: addDays(a.day, -1) }),
+          ...usualDays.map((d) => env.QUERY.query(site.id, site.timezone, { ...spec, from: d, to: d, ...span(d) })),
         ]);
-        // Usual visitors per day, scaled to the part of the day so far for the hourly check.
-        const usual = new Map(window.rows.map((r) => [String(r[dim] ?? ""), (Number(r.visitors ?? 0) / 28) * (opts.fraction ?? 1)]));
+        const totals = new Map<string, number>();
+        for (const res of before) for (const r of res.rows) totals.set(String(r[dim] ?? ""), (totals.get(String(r[dim] ?? "")) ?? 0) + Number(r.visitors ?? 0));
+        const usual = new Map([...totals].map(([k, v]) => [k, v / usualDays.length]));
         const names = new Set([...day.rows.map((r) => String(r[dim] ?? "")), ...usual.keys()]);
         const dayMap = new Map(day.rows.map((r) => [String(r[dim] ?? ""), Number(r.visitors ?? 0)]));
         return [...names].map((k) => ({
@@ -106,7 +121,7 @@ export async function alertDetail(
       lastEventAt = null;
     }
   }
-  return { siteId: site.id, domain: site.domain, day: a.day, kind: a.kind, value: a.value, expected: a.expected, history, baseline, drivers, lastEventAt };
+  return { siteId: site.id, domain: site.domain, day: a.day, kind: a.kind, value: a.value, expected: a.expected, history, baseline, around, drivers, lastEventAt };
 }
 
 /** Who should hear about a site: its subscribers, plus anyone with "all sites" on, as long as they can still see it. */
@@ -276,13 +291,9 @@ async function intradayDetail(
 ): Promise<AlertDetail> {
   const from = found.window === "today" ? 0 : hour - 3;
   const history = hourly.map((h) => sumHours(h, from, hour));
-  // Usual share of the day covered by the window (so far today, or the three hours), to scale "usual" in the
-  // where-from tables, which count just that window.
-  const dayTotal = medianOf(hourly.map((h) => sumHours(h, 0, 24)));
-  const fraction = dayTotal ? medianOf(history) / dayTotal : 1;
   const midnight = localMidnight(site.timezone, day);
   const window = { since: midnight + Math.max(0, from) * 3600, until: midnight + hour * 3600 };
-  const base = await alertDetail(env, site, { day, kind: found.kind, value: found.value, expected: found.expected }, { fraction, window });
+  const base = await alertDetail(env, site, { day, kind: found.kind, value: found.value, expected: found.expected }, { window });
   return {
     ...base,
     intraday: {
@@ -292,7 +303,8 @@ async function intradayDetail(
       hours: { today: byHour, usual: Array.from({ length: 24 }, (_, h) => medianOf(hourly.map((w) => w[h] ?? 0))) },
     },
     // Today's bar: visitors so far (daily totals only cover closed days).
-    history: sofar ? base.history.map((d) => (d.day === day ? { day, visitors: sofar.visitors, visits: sofar.visits, pageviews: sofar.pageviews, bounces: sofar.bounces, duration_sum: sofar.duration_sum } : d)) : base.history,
+    history: sofar ? base.history.map((d) => (d.day === day ? { day, ...sofar } : d)) : base.history,
+    around: sofar ? base.around?.map((d) => (d.day === day ? { day, ...sofar } : d)) : base.around,
   };
 }
 
