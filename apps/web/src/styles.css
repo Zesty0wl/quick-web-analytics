@@ -593,6 +593,8 @@ button.fchip { background: none; color: inherit; font: inherit; font-size: 13px;
 .xbars-bar { width: 100%; min-height: 1px; background: color-mix(in srgb, var(--tint) 18%, transparent); }
 .xbars-bar.same { background: color-mix(in srgb, var(--tint) 38%, transparent); }
 .xbars-bar.on { background: var(--color-accent); }
+.xbars-col.window { background: color-mix(in srgb, var(--color-accent) 10%, transparent); }
+.xbars-bar.day { background: color-mix(in srgb, var(--color-accent) 40%, transparent); }
 .xbars-bar.overlay { position: absolute; bottom: 0; width: 55%; }
 .xbars-usual { position: absolute; left: 0; right: 0; border-top: 1.5px dashed var(--color-neutral-500); z-index: 1; pointer-events: none; }
 .xbars-usual span { position: absolute; left: 0; bottom: 2px; font-size: 11px; color: var(--muted); background: var(--color-bg); padding: 0 4px; }
@@ -607,3 +609,7 @@ button.fchip { background: none; color: inherit; font: inherit; font-size: 13px;
 .site-settings .my-ip button:disabled { opacity: .5; cursor: wait; }
 .linklike, .site-settings .my-ip .linklike { all: unset; cursor: pointer; color: var(--color-accent); text-decoration: underline; font-weight: 600; }
 .linklike:focus-visible { outline: 2px solid var(--color-accent); outline-offset: 2px; }
+
+/* Version and build, under every page */
+.appfoot { max-width: 1480px; margin: 0 auto; padding: var(--space-4) var(--space-8) var(--space-8); font-size: 12px; color: var(--muted); font-variant-numeric: tabular-nums; }
+@media (max-width: 700px) { .appfoot { padding-left: 16px; padding-right: 16px; } }

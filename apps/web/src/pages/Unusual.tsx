@@ -92,8 +92,13 @@ export function Unusual({ site, day, url, navigate }: { site: Me["sites"][number
       <section className="section">
         {i?.hours ? (
           <>
-            <div className="section-head"><h3>Visits by hour</h3><span className="muted">Today against a usual {weekday(a.day)}</span></div>
-            <HourBars today={i.hours.today} usual={i.hours.usual} upTo={i.hour} />
+            <div className="section-head">
+              <h3>Visits by hour</h3>
+              <span className="muted">
+                {i.hours.today.length < 24 ? "Today" : `${weekday(a.day)} ${shortDate(a.day)}`} against a usual {weekday(a.day)} (shaded) · flagged hours in colour
+              </span>
+            </div>
+            <HourBars today={i.hours.today} usual={i.hours.usual} flagged={[i.window === "today" ? 0 : i.hour - 3, i.hour]} />
           </>
         ) : (
           <>
@@ -119,7 +124,7 @@ export function Unusual({ site, day, url, navigate }: { site: Me["sites"][number
         </section>
       ) : (
         <section className="section">
-          <div className="section-head"><h3>Where the change came from</h3><span className="muted">Visitors that day against usual{i ? `, scaled to ${hourly}` : ""}</span></div>
+          <div className="section-head"><h3>Where the change came from</h3><span className="muted">{i && hourly ? `Visitors ${hourly} against usual for those hours` : "Visitors that day against usual"}</span></div>
           {!movers ? (
             <p className="muted">The breakdown couldn't be worked out just now. Try again in a minute.</p>
           ) : !anyMovers ? (
@@ -210,16 +215,20 @@ function DayBars({ history, baseline, day, expected, flagged, onPick }: {
   );
 }
 
-/** Visits per hour today (accent) over the usual for each hour on this weekday (shaded). */
-function HourBars({ today, usual, upTo }: { today: number[]; usual: number[]; upTo: number }) {
+/**
+ * Visits per hour that day over the usual for each hour on this weekday (shaded): the flagged hours [from, to) in
+ * accent, the rest of the day lighter. Today only has the hours so far.
+ */
+function HourBars({ today, usual, flagged }: { today: number[]; usual: number[]; flagged: [number, number] }) {
   const max = Math.max(1, ...today, ...usual);
+  const upTo = today.length;
   return (
     <>
       <div className="xbars" role="img" aria-label="Visits per hour today against usual">
         {usual.map((u, h) => (
-          <div key={h} className="xbars-col" title={`${hh(h)}–${hh(h + 1)}: ${h < upTo ? `${whole(today[h] ?? 0)} visits, usually ` : "usually "}${whole(u)}`}>
+          <div key={h} className={h >= flagged[0] && h < flagged[1] ? "xbars-col window" : "xbars-col"} title={`${hh(h)}–${hh(h + 1)}: ${h < upTo ? `${whole(today[h] ?? 0)} visits, usually ` : "usually "}${whole(u)}`}>
             <div className="xbars-bar same" style={{ height: `${(u / max) * 100}%`, width: "100%" }} />
-            {h < upTo && <div className="xbars-bar on overlay" style={{ height: `${((today[h] ?? 0) / max) * 100}%` }} />}
+            {h < upTo && <div className={h >= flagged[0] && h < flagged[1] ? "xbars-bar on overlay" : "xbars-bar day overlay"} style={{ height: `${((today[h] ?? 0) / max) * 100}%` }} />}
           </div>
         ))}
       </div>

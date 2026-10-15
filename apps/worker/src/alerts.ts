@@ -59,7 +59,8 @@ export async function alertDetail(
   env: Env,
   site: Site,
   a: { day: string; kind: Anomaly["kind"]; value: number; expected: number },
-  opts: { fraction?: number } = {},
+  /** `window`: for hourly alerts, the exact span (unix seconds) the movers count, against usual scaled by `fraction`. */
+  opts: { fraction?: number; window?: { since: number; until: number } } = {},
 ): Promise<AlertDetail> {
   const { results } = await env.DB.prepare(
     "SELECT day, visitors, visits, pageviews, bounces, duration_sum FROM daily_stats WHERE site_id = ? AND day >= ? AND day <= ? ORDER BY day",
@@ -78,7 +79,7 @@ export async function alertDetail(
       const movers = async (dim: "source" | "page" | "country") => {
         const spec = { metrics: ["visitors" as const], groupBy: dim, limit: 300 };
         const [day, window] = await Promise.all([
-          env.QUERY.query(site.id, site.timezone, { ...spec, from: a.day, to: a.day }),
+          env.QUERY.query(site.id, site.timezone, { ...spec, from: a.day, to: a.day, ...opts.window }),
           env.QUERY.query(site.id, site.timezone, { ...spec, from: addDays(a.day, -28), to: addDays(a.day, -1) }),
         ]);
         // Usual visitors per day, scaled to the part of the day so far for the hourly check.
@@ -191,8 +192,11 @@ export async function notifyCapped(env: Env, site: Site, cap: number, day: strin
 
 // ---------- hourly "so far today" check ----------
 
-/** Visits per local hour on the previous six same weekdays (cached per site and day; it doesn't change). */
-async function intradayBaseline(env: Env, site: Site, day: string): Promise<number[][]> {
+/**
+ * Visits per local hour on the previous six same weekdays (cached per site and day; it doesn't change). `cache: false`
+ * computes it without storing, for explaining a past day (the cache only keeps the last few days).
+ */
+async function intradayBaseline(env: Env, site: Site, day: string, opts: { cache?: boolean } = {}): Promise<number[][]> {
   const cached = await env.DB.prepare("SELECT hourly FROM intraday_baselines WHERE site_id = ? AND day = ?").bind(site.id, day).first<{ hourly: string }>();
   if (cached) return JSON.parse(cached.hourly) as number[][];
   const res = await env.QUERY.query(site.id, site.timezone, { from: addDays(day, -42), to: addDays(day, -1), metrics: ["visits"], groupBy: "hour", limit: 1000 });
@@ -202,10 +206,12 @@ async function intradayBaseline(env: Env, site: Site, day: string): Promise<numb
   const hourly = days
     .map((d) => Array.from({ length: 24 }, (_, h) => byHour.get(`${d} ${String(h).padStart(2, "0")}:00`) ?? 0))
     .filter((hours) => hours.some((v) => v > 0));
-  await env.DB.batch([
-    env.DB.prepare("INSERT OR REPLACE INTO intraday_baselines (site_id, day, hourly) VALUES (?, ?, ?)").bind(site.id, day, JSON.stringify(hourly)),
-    env.DB.prepare("DELETE FROM intraday_baselines WHERE day < ?").bind(addDays(day, -3)),
-  ]);
+  if (opts.cache !== false) {
+    await env.DB.batch([
+      env.DB.prepare("INSERT OR REPLACE INTO intraday_baselines (site_id, day, hourly) VALUES (?, ?, ?)").bind(site.id, day, JSON.stringify(hourly)),
+      env.DB.prepare("DELETE FROM intraday_baselines WHERE day < ?").bind(addDays(day, -3)),
+    ]);
+  }
   return hourly;
 }
 
@@ -266,14 +272,17 @@ export async function checkIntraday(env: Env, site: Site, opts: { send?: boolean
 async function intradayDetail(
   env: Env, site: Site, day: string, hour: number, hourly: number[][],
   found: { kind: Anomaly["kind"]; value: number; expected: number; window: "today" | "last3h" },
-  sofar: Omit<DayFigures, "day">, byHour: number[],
+  sofar: Omit<DayFigures, "day"> | null, byHour: number[],
 ): Promise<AlertDetail> {
-  const history = hourly.map((h) => (found.window === "today" ? sumHours(h, 0, hour) : sumHours(h, hour - 3, hour)));
-  // Usual share of the day covered by the window (so far today, or the last three hours), to scale "usual" in the
-  // where-from tables.
+  const from = found.window === "today" ? 0 : hour - 3;
+  const history = hourly.map((h) => sumHours(h, from, hour));
+  // Usual share of the day covered by the window (so far today, or the three hours), to scale "usual" in the
+  // where-from tables, which count just that window.
   const dayTotal = medianOf(hourly.map((h) => sumHours(h, 0, 24)));
   const fraction = dayTotal ? medianOf(history) / dayTotal : 1;
-  const base = await alertDetail(env, site, { day, kind: found.kind, value: found.value, expected: found.expected }, { fraction });
+  const midnight = localMidnight(site.timezone, day);
+  const window = { since: midnight + Math.max(0, from) * 3600, until: midnight + hour * 3600 };
+  const base = await alertDetail(env, site, { day, kind: found.kind, value: found.value, expected: found.expected }, { fraction, window });
   return {
     ...base,
     intraday: {
@@ -283,28 +292,38 @@ async function intradayDetail(
       hours: { today: byHour, usual: Array.from({ length: 24 }, (_, h) => medianOf(hourly.map((w) => w[h] ?? 0))) },
     },
     // Today's bar: visitors so far (daily totals only cover closed days).
-    history: base.history.map((d) => (d.day === day ? { day, visitors: sofar.visitors, visits: sofar.visits, pageviews: sofar.pageviews, bounces: sofar.bounces, duration_sum: sofar.duration_sum } : d)),
+    history: sofar ? base.history.map((d) => (d.day === day ? { day, visitors: sofar.visitors, visits: sofar.visits, pageviews: sofar.pageviews, bounces: sofar.bounces, duration_sum: sofar.duration_sum } : d)) : base.history,
   };
 }
 
 /**
- * Why a day was unusual, for the dashboard's explanation page: the same analysis as its alert email. Today's hourly
- * alert gets the hour-by-hour view; any other day is explained as a whole day.
+ * Why a day was unusual, for the dashboard's explanation page: the same analysis as its alert email. An hourly alert
+ * is explained hour by hour (that day's hours against a usual one, the movers counted in its window); a nightly one
+ * as a whole day.
  */
 export async function explainAnomaly(env: Env, site: Site, a: StoredAnomaly): Promise<AlertDetail> {
   const detail = a.detail ? (JSON.parse(a.detail) as { hour?: number; window?: "today" | "last3h" }) : null;
-  if (a.metric !== "intraday" || a.day !== todayIn(site.timezone) || detail?.hour === undefined || !detail.window) {
-    return alertDetail(env, site, a);
-  }
+  if (a.metric !== "intraday" || detail?.hour === undefined || !detail.window) return alertDetail(env, site, a);
   const hour = detail.hour;
-  const midnight = localMidnight(site.timezone, a.day);
-  const hourly = await intradayBaseline(env, site, a.day);
-  const live = await env.SITE.get(env.SITE.idFromName(String(site.id))).overview([
-    { day: a.day, start: midnight, end: midnight + hour * 3600 },
-    ...Array.from({ length: hour }, (_, h) => ({ day: `h${h}`, start: midnight + h * 3600, end: midnight + (h + 1) * 3600 })),
+  const found = { ...a, window: detail.window };
+  if (a.day === todayIn(site.timezone)) {
+    // Today: from the site's Durable Object, as the hourly check saw it.
+    const midnight = localMidnight(site.timezone, a.day);
+    const hourly = await intradayBaseline(env, site, a.day);
+    const live = await env.SITE.get(env.SITE.idFromName(String(site.id))).overview([
+      { day: a.day, start: midnight, end: midnight + hour * 3600 },
+      ...Array.from({ length: hour }, (_, h) => ({ day: `h${h}`, start: midnight + h * 3600, end: midnight + (h + 1) * 3600 })),
+    ]);
+    const [sofar, ...byHour] = live.days;
+    return intradayDetail(env, site, a.day, hour, hourly, found, sofar, byHour.map((d) => d.visits));
+  }
+  // An earlier day: the whole day's hours from the query worker.
+  const [hourly, day] = await Promise.all([
+    intradayBaseline(env, site, a.day, { cache: false }),
+    env.QUERY.query(site.id, site.timezone, { from: a.day, to: a.day, metrics: ["visits"], groupBy: "hour" }),
   ]);
-  const [sofar, ...byHour] = live.days;
-  return intradayDetail(env, site, a.day, hour, hourly, { ...a, window: detail.window }, sofar, byHour.map((d) => d.visits));
+  const byHour = new Map(day.rows.map((r) => [Number(String(r.hour).slice(11, 13)), Number(r.visits ?? 0)]));
+  return intradayDetail(env, site, a.day, hour, hourly, found, null, Array.from({ length: 24 }, (_, h) => byHour.get(h) ?? 0));
 }
 
 /** Hourly: check every site's day so far. */

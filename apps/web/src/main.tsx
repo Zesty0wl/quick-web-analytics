@@ -40,6 +40,19 @@ function useToday(tz?: string): string {
   return today;
 }
 
+/** Which build this is: the release, the commit it was built from (and whether it had uncommitted changes), and when. */
+function Footer() {
+  const b = __QWA_BUILD__;
+  const built = new Date(b.builtAt).toLocaleString("en-GB", { day: "numeric", month: "short", year: "numeric", hour: "2-digit", minute: "2-digit" });
+  return (
+    <footer className="appfoot">
+      Quick Web Analytics {b.version}
+      {b.commit && <> · <span title={b.modified ? "Built from this commit plus uncommitted changes" : "The commit this was built from"}>{b.commit}{b.modified ? " (modified)" : ""}</span></>}
+      {" "}· built <time dateTime={b.builtAt}>{built}</time>
+    </footer>
+  );
+}
+
 const queryClient = new QueryClient({ defaultOptions: { queries: { refetchOnWindowFocus: false, retry: 1 } } });
 
 function App() {
@@ -116,6 +129,7 @@ function App() {
         )}
         </Suspense>
       </main>
+      <Footer />
     </>
   );
 }
