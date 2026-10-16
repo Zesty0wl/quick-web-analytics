@@ -1,4 +1,4 @@
-import { lazy, Suspense, useEffect, useMemo, useState } from "react";
+import { lazy, Suspense, useEffect, useMemo, useRef, useState } from "react";
 import { useMutation, useQueryClient } from "@tanstack/react-query";
 import { TIME_GRAINS, type Dimension, type Filter, type Metric, type TimeGrain } from "@qwa/shared";
 import { api, useAlerts, useAnomalies, useRealtime, useStats, type Me, type Realtime, type SiteRef } from "../api";
@@ -13,7 +13,7 @@ import { Section, Seg } from "../components/Section";
 const SearchSection = lazy(() => import("./Google").then((m) => ({ default: m.SearchSection })));
 const SpeedSection = lazy(() => import("./Google").then((m) => ({ default: m.SpeedSection })));
 const Unusual = lazy(() => import("./Unusual").then((m) => ({ default: m.Unusual })));
-import { addDays, comparisonRange, daysBetween, GRAIN_LABELS, overviewRange, grainsFor, isWeekend, shortDate, weekday, type Compare, type Period } from "../dates";
+import { addDays, comparisonRange, daysBetween, isSameTime, SAME_TIME, GRAIN_LABELS, overviewRange, grainsFor, isWeekend, shortDate, weekday, type Compare, type Period } from "../dates";
 import { compact, describeAnomaly, DIMENSION_LABELS, displayValue, duration, liveUrl, metricValue, METRIC_LABELS, trackerState, whole } from "../format";
 import { globalParams, linkHandler, readSiteState, withParams, type Navigate, type SiteState } from "../url";
 
@@ -45,6 +45,18 @@ export interface Ctx {
 
 type Row = Record<string, string | number | null>;
 
+/**
+ * Whether a comparison query is still showing its answer for other days (after a change of range or filter), rather
+ * than for the same days a little shorter: today's comparison moves on every 5 minutes, and meanwhile its last answer
+ * is still a fair one.
+ */
+function useOtherDays(q: { data?: unknown; isPlaceholderData: boolean }, cmp: Period, filters: Filter[]): boolean {
+  const days = JSON.stringify([cmp.from, cmp.to, filters]);
+  const shown = useRef("");
+  if (q.data && !q.isPlaceholderData) shown.current = days;
+  return q.isPlaceholderData && shown.current !== days;
+}
+
 /** A breakdown plus the same breakdown for the comparison period (for change columns). */
 function useBreakdown(c: Ctx, dim: Dimension, metrics: Metric[], opts: { limit?: number; enabled: boolean; compare?: boolean }) {
   const cur = useStats(c.site, { ...c.period, metrics, groupBy: dim, filters: c.filters, limit: opts.limit ?? 10 }, { enabled: opts.enabled });
@@ -52,7 +64,8 @@ function useBreakdown(c: Ctx, dim: Dimension, metrics: Metric[], opts: { limit?:
   const prevMap = useMemo(() => new Map((prev.data?.rows ?? []).map((r) => [String(r[dim] ?? ""), Number(r[metrics[0]] ?? 0)])), [prev.data, dim, metrics]);
   const rows = (cur.data?.rows ?? []) as Row[];
   // Old rows against a new comparison (or vice versa) would give wrong changes, so hide them until both are current.
-  const changesStale = cur.isPlaceholderData || prev.isPlaceholderData;
+  const prevStale = useOtherDays(prev, c.cmp, c.filters);
+  const changesStale = cur.isPlaceholderData || prevStale;
   return { rows, prevMap: changesStale ? new Map<string, number>() : prevMap, changesStale, loading: cur.isLoading, busy: busyOf(cur, prev), empty: rows.length === 0, error: cur.error as Error | null };
 }
 
@@ -209,7 +222,8 @@ function Detail({ admin, sites, site, state, url, navigate, dates, compare, peri
   const totals = useStats(ref, { ...dates, metrics: TILES, filters }, { freshness: "fast" });
   const cmpTotals = useStats(ref, { ...cmp, metrics: TILES, filters });
   const series = useStats(ref, { ...dates, metrics: seriesMetrics, groupBy: grain, filters }, { freshness: "fast" });
-  const cmpSeries = useStats(ref, { ...cmp, metrics: seriesMetrics, groupBy: grain, filters });
+  // The chart's comparison line covers the whole comparison day, even when the totals stop at the same time as today.
+  const cmpSeries = useStats(ref, { ...(isSameTime(dates, cmp) ? { from: cmp.from, to: cmp.to } : cmp), metrics: seriesMetrics, groupBy: grain, filters });
   const live = useLiveUpdates(ref);
   const rt = useRealtime(site.id, live === "down");
   const anomalies = useAnomalies(site.id, from, to);
@@ -218,7 +232,8 @@ function Detail({ admin, sites, site, state, url, navigate, dates, compare, peri
   const p = cmpTotals.data?.rows[0];
   // While a new range/filter loads, queries finish at different times. Never mix old and new results:
   // deltas wait until both totals are current, and the chart draws rows with the grain they were fetched with.
-  const tilesStale = totals.isPlaceholderData || cmpTotals.isPlaceholderData;
+  const cmpTotalsStale = useOtherDays(cmpTotals, cmp, filters);
+  const tilesStale = totals.isPlaceholderData || cmpTotalsStale;
   const rows = series.data?.rows ?? [];
   const dataGrain = grainOf(rows) ?? grain;
   const keys = rows.map((r) => String(r[dataGrain]));
@@ -255,6 +270,7 @@ function Detail({ admin, sites, site, state, url, navigate, dates, compare, peri
     }
   };
   const home = `/${globalParams(url)}`;
+  const legendText = cmpText.replace(SAME_TIME, ""); // the chart's line is the whole day
   const settings = `/admin?tab=sites&site=${site.id}&view=settings`;
 
   return (
@@ -325,7 +341,7 @@ function Detail({ admin, sites, site, state, url, navigate, dates, compare, peri
         <div className="legend">
           <span className="ttl">{METRIC_LABELS[state.metric]}</span>
           <span className="k"><span className="line" />{periodText}</span>
-          <span className="k"><span className="dash" />{cmpText[0].toUpperCase() + cmpText.slice(1)}</span>
+          <span className="k"><span className="dash" />{legendText[0].toUpperCase() + legendText.slice(1)}</span>
           <span style={{ marginLeft: "auto" }} />
           <Seg<TimeGrain>
             value={grain}

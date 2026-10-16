@@ -12,7 +12,7 @@ import { cruxRecord, GoogleError, pageSpeed, type CruxRecord, type SpeedResult }
 import { allSites } from "./sites";
 import { authenticateToken, type TokenAuth } from "./tokens";
 import { originOf } from "./oauth";
-import { addDays, todayIn } from "./tz";
+import { addDays, sameTimeWindow, todayIn } from "./tz";
 
 const PROTOCOLS = ["2025-11-25", "2025-06-18", "2025-03-26", "2024-11-05"];
 const SERVER_INFO = { name: "quick-web-analytics", title: "Quick Web Analytics", version: "0.3.0" };
@@ -81,7 +81,10 @@ interface Period {
   cto: string;
   label: string;
   cmpLabel: string;
-  /** "24h": exact windows in unix seconds (the dates then name the days they touch). */
+  /**
+   * "24h": exact windows in unix seconds (the dates then name the days they touch). "today": only `csince`/`cuntil`,
+   * the comparison day up to the same time of day.
+   */
   since?: number;
   until?: number;
   csince?: number;
@@ -91,6 +94,8 @@ interface Period {
 /** A period's current and comparison ranges, as query spec fields. */
 const curRange = (p: Period) => ({ from: p.from, to: p.to, ...(p.since !== undefined ? { since: p.since, until: p.until } : {}) });
 const prevRange = (p: Period) => ({ from: p.cfrom, to: p.cto, ...(p.csince !== undefined ? { since: p.csince, until: p.cuntil } : {}) });
+/** The comparison for a chart: the whole comparison day for today, so its line shows how that day went on. */
+const prevSeries = (p: Period) => (p.since !== undefined ? prevRange(p) : { from: p.cfrom, to: p.cto });
 
 export function resolvePeriod(site: Site, args: Json): Period {
   const today = todayIn(site.timezone);
@@ -139,9 +144,15 @@ export function resolvePeriod(site: Site, args: Json): Period {
       throw new ToolError(`period must be one of ${PERIODS.join(", ")}, or give from and to`);
     }
   }
-  if (args.compare === "year") return { from, to, cfrom: addYears(from, -1), cto: addYears(to, -1), label, cmpLabel: "the same period last year" };
   const n = daysBetween(from, to);
-  return { from, to, cfrom: addDays(from, -n), cto: addDays(from, -1), label, cmpLabel: `the previous ${n === 1 ? "day" : `${n} days`}` };
+  const [cfrom, cto] = args.compare === "year" ? [addYears(from, -1), addYears(to, -1)] : [addDays(from, -n), addDays(from, -1)];
+  // Today so far is compared with the comparison day up to the same time.
+  const cut = sameTimeWindow(site.timezone, from, to, cto);
+  if (cut) {
+    const at = new Date(cut.end * 1000).toLocaleTimeString("en-GB", { timeZone: site.timezone, hour: "2-digit", minute: "2-digit" });
+    return { from, to, cfrom, cto, csince: cut.start, cuntil: cut.end, label, cmpLabel: `${args.compare === "year" ? "the same day last year" : "yesterday"} up to the same time (${at})` };
+  }
+  return { from, to, cfrom, cto, label, cmpLabel: args.compare === "year" ? "the same period last year" : `the previous ${n === 1 ? "day" : `${n} days`}` };
 }
 
 type Filter = [Dimension, "is" | "is_not" | "contains", string | string[]];
@@ -408,7 +419,7 @@ const TOOLS: Tool[] = [
       if (grain === "hour" && days > 14) throw new ToolError("hourly data is limited to 14 days; use day or a shorter range");
       const [cur, prev, an] = await Promise.all([
         internal<{ rows: Json[] }>(c, "POST", `/sites/${site.id}/query`, { ...curRange(p), metrics: [metric], groupBy: grain, filters }),
-        internal<{ rows: Json[] }>(c, "POST", `/sites/${site.id}/query`, { ...prevRange(p), metrics: [metric], groupBy: grain, filters }),
+        internal<{ rows: Json[] }>(c, "POST", `/sites/${site.id}/query`, { ...prevSeries(p), metrics: [metric], groupBy: grain, filters }),
         internal<{ anomalies: { day: string; kind: string; value: number; expected: number }[] }>(c, "GET", `/sites/${site.id}/anomalies?from=${p.from}&to=${p.to}`).catch(() => ({ anomalies: [] })),
       ]);
       const flagged = new Map(an.anomalies.map((a) => [a.day, a.kind]));

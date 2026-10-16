@@ -125,7 +125,7 @@ against them).
 | `POST auth/token` | — | §2.3, §2.4 |
 | `POST auth/revoke` | — | §2.4 |
 | `GET me` | `GET /api/me` | Adds `device` (id, name) and `instance` (name, version, features: `{ search, speed, push }`) |
-| `GET overview?from&to&cfrom&cto[&since&until&csince&cuntil]` | `GET /api/overview` | Sites with daily totals, live count, per-minute series, anomalies, cap status. With the optional windows (unix seconds), one total per window instead, keyed by `to` and `cto` (the last 24 hours) |
+| `GET overview?from&to&cfrom&cto[&since&until&csince&cuntil]` | `GET /api/overview` | Sites with daily totals, live count, per-minute series, anomalies, cap status. With the optional windows (unix seconds), one total per window instead, keyed by `to` and `cto` (the last 24 hours). Without them, when `from` and `to` are a site's today and `cfrom` = `cto`, that site's comparison stops at the same time of day (in 5-minute steps); `POST breakdown` does the same |
 | `POST sites/:site/query` | `POST /api/sites/:site/query` | The dashboard's query spec (metrics, groupBy, filters, limit, optional since/until); same validation and limits |
 | `GET sites/:site/realtime` | `GET /api/sites/:site/realtime` | |
 | `GET sites/:site/anomalies?from&to` | `GET /api/sites/:site/anomalies` | |

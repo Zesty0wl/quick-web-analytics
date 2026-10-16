@@ -8,6 +8,21 @@ export function todayIn(tz?: string, at = new Date()): string {
 /** The local date of a unix-seconds instant. */
 const dateAt = (tz: string | undefined, sec: number) => todayIn(tz, new Date(sec * 1000));
 
+function offsetAt(tz: string | undefined, utcSec: number): number {
+  const f = new Intl.DateTimeFormat("en-US", {
+    timeZone: tz, hourCycle: "h23", year: "numeric", month: "2-digit", day: "2-digit", hour: "2-digit", minute: "2-digit", second: "2-digit",
+  });
+  const p = Object.fromEntries(f.formatToParts(new Date(utcSec * 1000)).map((x) => [x.type, x.value]));
+  return Date.UTC(+p.year, +p.month - 1, +p.day, +p.hour, +p.minute, +p.second) / 1000 - utcSec;
+}
+
+/** Unix seconds of local midnight starting `date` in `tz` (as the worker's `localMidnight`). */
+export function localMidnight(tz: string | undefined, date: string): number {
+  const [y, m, d] = date.split("-").map(Number);
+  const guess = Date.UTC(y, m - 1, d) / 1000;
+  return guess - offsetAt(tz, guess - offsetAt(tz, guess));
+}
+
 export function addDays(date: string, n: number): string {
   const [y, m, d] = date.split("-").map(Number);
   return new Date(Date.UTC(y, m - 1, d + n)).toISOString().slice(0, 10);
@@ -62,7 +77,14 @@ export function presetRange(preset: Preset, tz?: string, first?: string): Period
   return { from: addDays(today, -back), to: today };
 }
 
-export function comparisonRange(p: Period, mode: Compare, tz?: string): Period {
+/** Today so far is compared with the same time of day, in 5-minute steps (as the worker's `sameTimeWindow`). */
+const SAME_TIME_STEP = 300;
+
+/**
+ * The period to compare with. Today alone is compared with the comparison day up to the same time of day, so a day
+ * in progress isn't measured against a whole one.
+ */
+export function comparisonRange(p: Period, mode: Compare, tz?: string, now = Date.now()): Period {
   if (p.since !== undefined && p.until !== undefined) {
     const yearBefore = (sec: number) => {
       const d = new Date(sec * 1000);
@@ -73,10 +95,18 @@ export function comparisonRange(p: Period, mode: Compare, tz?: string): Period {
     const until = mode === "year" ? yearBefore(p.until) : p.since;
     return { from: dateAt(tz, since), to: dateAt(tz, until - 1), since, until };
   }
-  if (mode === "year") return { from: addYears(p.from, -1), to: addYears(p.to, -1) };
   const n = daysBetween(p.from, p.to);
-  return { from: addDays(p.from, -n), to: addDays(p.from, -1) };
+  const cmp = mode === "year" ? { from: addYears(p.from, -1), to: addYears(p.to, -1) } : { from: addDays(p.from, -n), to: addDays(p.from, -1) };
+  const today = todayIn(tz, new Date(now));
+  if (p.from !== today || p.to !== today) return cmp;
+  const sec = now / 1000;
+  const elapsed = Math.max(SAME_TIME_STEP, Math.floor((sec - localMidnight(tz, today)) / SAME_TIME_STEP) * SAME_TIME_STEP);
+  const since = localMidnight(tz, cmp.to);
+  return { ...cmp, since, until: Math.min(since + elapsed, localMidnight(tz, addDays(cmp.to, 1))) };
 }
+
+/** Whether `cmp` stops at the same time of day as today so far (rather than covering whole days). */
+export const isSameTime = (p: Period, cmp: Period) => p.since === undefined && cmp.since !== undefined;
 
 /**
  * What the overview (and the site switcher's totals) ask for. It totals whole days; for the last 24 hours it gets one
@@ -120,7 +150,11 @@ export function periodLabel(range: Range, from: string, to: string): string {
   return range === "custom" ? rangeLabel(from, to) : PRESETS.find((p) => p.id === range)!.long;
 }
 
-export function compareLabel(range: Range, compare: Compare, from: string, to: string): string {
+export const SAME_TIME = " up to the same time";
+
+/** `sameTime`: the comparison stops at the same time of day as today so far. */
+export function compareLabel(range: Range, compare: Compare, from: string, to: string, sameTime = false): string {
+  if (sameTime) return `${compare === "year" ? "the same day last year" : "yesterday"}${SAME_TIME}`;
   if (compare === "year") return "the same period last year";
   if (range === "today") return "yesterday";
   if (range === "24h") return "the 24 hours before";

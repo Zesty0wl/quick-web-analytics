@@ -10,7 +10,7 @@ import { alertDetail, anomalyJob, checkIntraday, emailConfigured, explainAnomaly
 import { moverChange, sampleAlert, topMovers } from "./email";
 import { createDemoSites, demoTick, seededMarker, seedHistory, seedToday } from "./demo";
 import { rollupSite, storedDays, type DayStats } from "./rollup";
-import { addDays, localMidnight, todayIn } from "./tz";
+import { addDays, localMidnight, sameTimeWindow, todayIn } from "./tz";
 import { alpha2 } from "./iso3";
 import { clientIp, ipv6Network } from "./ingest/ip";
 import { createToken, forgetGrant, listTokens, revokeToken } from "./tokens";
@@ -103,7 +103,8 @@ async function pastTotals(env: Env, ids: number[], fromDay: string) {
 /**
  * All visible sites with daily totals for the current range (`from`..`to`) and the comparison range
  * (`cfrom`..`cto`). Closed days come from D1; today (and yesterday until rolled up) live from each site's
- * DO, falling back to the query worker where the DO's data doesn't cover the whole day.
+ * DO, falling back to the query worker where the DO's data doesn't cover the whole day. Today alone is compared with
+ * the comparison day up to the same time of day.
  */
 api.get("/overview", async (c) => {
   const user = c.get("user");
@@ -114,7 +115,7 @@ api.get("/overview", async (c) => {
   // Optional exact windows (e.g. the last 24 hours against the 24 before): one total each, keyed by `to` and `cto`.
   const secs = (k: string) => (/^\d{1,12}$/.test(q(k)) ? Number(q(k)) : null);
   const since = secs("since"), until = secs("until"), csince = secs("csince"), cuntil = secs("cuntil");
-  const windows = since !== null && until !== null && csince !== null && cuntil !== null && since < until && csince < cuntil
+  const given = since !== null && until !== null && csince !== null && cuntil !== null && since < until && csince < cuntil
     ? { cur: { day: to, start: since, end: until }, prev: { day: cto, start: csince, end: cuntil } }
     : null;
 
@@ -126,6 +127,9 @@ api.get("/overview", async (c) => {
   const out = await Promise.all(
     sites.map(async (site) => {
       const today = todayIn(site.timezone);
+      // Today alone is compared with the comparison day up to the same time, in the site's own timezone.
+      const cut = given || cfrom !== cto ? null : sameTimeWindow(site.timezone, from, to, cto);
+      const windows = given ?? (cut && { cur: { day: to, start: localMidnight(site.timezone, to), end: localMidnight(site.timezone, addDays(to, 1)) }, prev: { day: cto, ...cut } });
       const have = new Map((stored.get(site.id) ?? []).map((d) => [d.day, d]));
       const inRange = (d: string) => (d >= from && d <= to) || (d >= cfrom && d <= cto);
       const liveDays = windows ? [] : [today, addDays(today, -1)].filter((d) => inRange(d) && (d === today || !have.has(d)));
@@ -231,8 +235,11 @@ api.post("/breakdown", async (c) => {
   await Promise.all(
     sites.map(async (site) => {
       try {
-        const live = await liveFor(c.env, site, [cur, prev]);
-        const [a, b] = await Promise.all([c.env.QUERY.query(site.id, site.timezone, cur, live), c.env.QUERY.query(site.id, site.timezone, prev, live)]);
+        // As on the overview, today alone is compared with the comparison day up to the same time.
+        const cut = prev.since !== undefined || prev.from !== prev.to ? null : sameTimeWindow(site.timezone, cur.from, cur.to, prev.to);
+        const before = cut ? { ...prev, since: cut.start, until: cut.end } : prev;
+        const live = await liveFor(c.env, site, [cur, before]);
+        const [a, b] = await Promise.all([c.env.QUERY.query(site.id, site.timezone, cur, live), c.env.QUERY.query(site.id, site.timezone, before, live)]);
         rows.push(...joinRows(site.id, dim, cur.metrics, a, b));
         if (a.rows.length >= limit) truncated.push(site.id);
       } catch (e) {

@@ -23,3 +23,18 @@ export function localMidnight(tz: string, date: string): number {
   const t = guess - offsetAt(tz, guess);
   return guess - offsetAt(tz, t);
 }
+
+/** "Today so far" is compared with the same time of day, in steps of this many seconds (so answers can be reused). */
+export const SAME_TIME_STEP = 300;
+
+/**
+ * When the period is just today, the comparison day up to the same time of day (in `SAME_TIME_STEP` steps, at least
+ * one), so a day in progress isn't measured against a whole one. Null for any other period.
+ */
+export function sameTimeWindow(tz: string, from: string, to: string, cday: string, nowSec = Date.now() / 1000): { start: number; end: number } | null {
+  const today = todayIn(tz, nowSec * 1000);
+  if (from !== today || to !== today || cday >= today) return null;
+  const elapsed = Math.max(SAME_TIME_STEP, Math.floor((nowSec - localMidnight(tz, today)) / SAME_TIME_STEP) * SAME_TIME_STEP);
+  const start = localMidnight(tz, cday);
+  return { start, end: Math.min(start + elapsed, localMidnight(tz, addDays(cday, 1))) };
+}

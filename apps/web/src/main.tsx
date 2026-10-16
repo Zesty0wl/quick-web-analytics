@@ -5,7 +5,7 @@ import { ApiError, useMe } from "./api";
 import { Spinner } from "./components/Bits";
 import { Header } from "./components/Header";
 import { SiteSwitcher } from "./components/SiteSwitcher";
-import { compareLabel, comparisonRange, overviewRange, periodLabel, presetRange, todayIn } from "./dates";
+import { compareLabel, comparisonRange, isSameTime, overviewRange, periodLabel, presetRange, todayIn } from "./dates";
 import { Overview } from "./pages/Overview";
 import { SECTIONS } from "./pages/sections";
 import { useAppearance } from "./theme";
@@ -21,11 +21,11 @@ const OAuthConsent = lazy(() => import("./pages/OAuthConsent").then((m) => ({ de
 const loading = <div className="busy-block" style={{ minHeight: "60vh" }}><Spinner size={16} />Loading…</div>;
 
 /**
- * Re-render when the date changes in `tz`, so "today" and "last 30 days" move on at midnight in an open tab, and on
- * the hour, so "last 24 hours" does.
+ * Re-render when the date changes in `tz`, so "today" and "last 30 days" move on at midnight in an open tab, on the
+ * hour, so "last 24 hours" does, and every 5 minutes, so today's comparison (up to the same time yesterday) does.
  */
 function useToday(tz?: string): string {
-  const stamp = () => `${todayIn(tz)} ${Math.floor(Date.now() / 3_600_000)}`;
+  const stamp = () => `${todayIn(tz)} ${Math.floor(Date.now() / 300_000)}`;
   const [today, setToday] = useState(stamp);
   useEffect(() => {
     const check = () => setToday(stamp());
@@ -91,7 +91,7 @@ function App() {
   const cmp = comparisonRange(period, g.compare, site?.timezone);
   const overviewDates = overviewRange(period, cmp);
   const periodText = periodLabel(g.range, from, to);
-  const cmpText = compareLabel(g.range, g.compare, from, to);
+  const cmpText = compareLabel(g.range, g.compare, from, to, isSameTime(period, cmp));
   const home = `/${globalParams(url)}`;
 
   return (
