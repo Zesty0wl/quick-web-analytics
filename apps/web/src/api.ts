@@ -150,7 +150,9 @@ export interface SiteRef {
 
 /** How quickly a report follows new events: "fast" for the headline numbers and chart, "slow" for the sections. */
 export type Freshness = "fast" | "slow";
-export const FRESHNESS_MS: Record<Freshness, number> = { fast: 10_000, slow: 30_000 };
+// The live numbers (visitors now, the last 30 minutes) arrive over the WebSocket as they change; these are how often
+// the reports themselves are recounted while events keep arriving.
+export const FRESHNESS_MS: Record<Freshness, number> = { fast: 60_000, slow: 5 * 60_000 };
 /** Even without word of new events (e.g. the live connection is down), reports reaching today refresh this often. */
 export const FALLBACK_REFRESH_MS = 5 * 60_000;
 
@@ -254,9 +256,10 @@ export const useOverview = (r: OverviewRange) =>
   useQuery({
     queryKey: ["overview", r],
     queryFn: () => api<{ sites: OverviewSite[] }>(`/overview?${new URLSearchParams(Object.entries(r).filter(([, v]) => v !== undefined).map(([k, v]) => [k, String(v)]))}`),
-    refetchInterval: 30_000,
+    // Each refresh asks every site's Durable Object for its live numbers, so not too often (and never in a hidden tab).
+    refetchInterval: 60_000,
     refetchOnWindowFocus: true,
-    staleTime: 10_000,
+    staleTime: 20_000,
     placeholderData: (prev) => prev,
   });
 

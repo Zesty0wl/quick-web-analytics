@@ -4,10 +4,11 @@ import type { Env } from "../env";
 import { speedJob } from "../google";
 import { nextRun, SPEED_HOURS, SPEED_SITES_PER_RUN } from "../schedule";
 import { allSites } from "../sites";
+import { summaryJob } from "../summary";
 
 /**
- * One instance ("global") that runs the hourly jobs on a Durable Object alarm: the "so far today" anomaly check and,
- * overnight, the PageSpeed tests. An alarm is used rather than a cron trigger because it's self-sustaining (each run
+ * One instance ("global") that runs the hourly jobs on a Durable Object alarm: the "so far today" anomaly check, the
+ * daily summaries and, overnight, the PageSpeed tests. An alarm is used rather than a cron trigger because it's self-sustaining (each run
  * books the next) and visible (`status()`); the Worker calls `ensure()` so the chain restarts if it ever stops.
  */
 export class Scheduler extends DurableObject<Env> {
@@ -33,6 +34,8 @@ export class Scheduler extends DurableObject<Env> {
       const sites = await allSites(this.env);
       await intradayJob(this.env, sites);
       if (SPEED_HOURS.includes(new Date(started).getUTCHours())) await speedJob(this.env, sites, { limit: SPEED_SITES_PER_RUN });
+      // Daily summaries for days that have closed since the last run (and, at first, each site's history).
+      await summaryJob(this.env, sites);
     } catch (e) {
       error = (e as Error).message;
       console.error("hourly jobs failed", e);

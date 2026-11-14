@@ -10,7 +10,12 @@ import { randomId, utcDay } from "../ingest/visitor";
 import { forViewer } from "../realtime";
 
 const SESSION_TIMEOUT_S = 30 * 60;
-const FLUSH_INTERVAL_MS = 5 * 60 * 1000;
+// How often changed days are rewritten in R2. Nothing waits for it: queries read unflushed days straight from here
+// (see liveFiles) and events are safe in SQLite until flushed. A longer interval means fewer R2 writes, and fewer new
+// versions of today's files for readers to fetch again.
+const FLUSH_INTERVAL_MS = 15 * 60 * 1000;
+/** Day files this many days old are never rewritten (local rows are kept for 3 days), so they can be folded into the month file. */
+const SETTLED_AFTER_DAYS = 2;
 const LOCAL_RETENTION_S = 3 * 86_400;
 /** How often live day files for queries may be rebuilt (per day), while events keep arriving. */
 const LIVE_REBUILD_MS = 5_000;
@@ -340,11 +345,14 @@ export class SiteDO extends DurableObject<Env> {
   }
 
   /**
-   * Merge the day files of every closed UTC month into one month file per table, then delete them.
+   * Merge settled day files into one month file per table, then delete them: whole closed months, and the current
+   * month so far (less the last few days, which can still change). A 30-day report then reads a couple of files per
+   * table plus the last few days, rather than a file per day.
    * Safe to re-run: an existing month file is rebuilt with any newer day files replacing its rows for those days.
+   * Each month file records the last day it holds (`through`), so readers know which day files it has replaced.
    */
-  async compactClosedMonths(siteId: number): Promise<{ month: string; table: TableName; days: number; rows: number }[]> {
-    const currentMonth = new Date().toISOString().slice(0, 7);
+  async compactMonths(siteId: number): Promise<{ month: string; table: TableName; days: number; rows: number }[]> {
+    const settledBefore = utcDay(Date.now() - SETTLED_AFTER_DAYS * 86_400_000);
     const pendingDays = new Set(
       this.sql.exec<{ key: string }>("SELECT key FROM meta WHERE key LIKE 'dirty:%'").toArray().map((r) => r.key.slice(6)),
     );
@@ -364,7 +372,7 @@ export class SiteDO extends DurableObject<Env> {
       for (const o of days) {
         const day = o.key.slice(prefix.length, prefix.length + 10);
         const month = day.slice(0, 7);
-        if (month >= currentMonth || pendingDays.has(day)) continue;
+        if (day >= settledBefore || pendingDays.has(day)) continue;
         byMonth.set(month, [...(byMonth.get(month) ?? []), o]);
       }
 
@@ -384,8 +392,16 @@ export class SiteDO extends DurableObject<Env> {
         }
         for (const o of objs) sources.push({ file: r2Buffer(this.env.DATA, o.key, o.size) });
 
+        // Every settled day of the month is now in the file, up to the first one still waiting to be flushed (if any).
+        const [y, m] = month.split("-").map(Number);
+        const monthEnd = new Date(Date.UTC(y, m, 0)).toISOString().slice(0, 10);
+        const waiting = [...pendingDays].filter((d) => d.startsWith(month) && d < settledBefore).sort()[0];
+        const lastSettled = utcDay(Date.parse(`${settledBefore}T00:00:00Z`) - 86_400_000);
+        let through = lastSettled < monthEnd ? lastSettled : monthEnd;
+        if (waiting) through = [through, utcDay(Date.parse(`${waiting}T00:00:00Z`) - 86_400_000)].sort()[0];
+
         const merged = await mergeTable(table, sources);
-        if (merged) await this.env.DATA.put(mKey, merged.buffer);
+        if (merged) await this.env.DATA.put(mKey, merged.buffer, { customMetadata: { through } });
         else if (existing) await this.env.DATA.delete(mKey);
         // Only delete the day files once the month file is safely written.
         await this.env.DATA.delete(objs.map((o) => o.key));

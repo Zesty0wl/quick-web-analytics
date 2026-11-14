@@ -90,10 +90,12 @@ export async function alertDetail(
         const m = localMidnight(site.timezone, d);
         return { since: m + (opts.window.since - midnight), until: m + (opts.window.until - midnight) };
       };
+      // A day still being recorded: include what the site hasn't written to R2 yet (it flushes every 15 minutes).
+      const live = a.day >= addDays(todayIn(site.timezone), -1) ? await env.SITE.get(env.SITE.idFromName(String(site.id))).liveFiles().catch(() => undefined) : undefined;
       const movers = async (dim: "source" | "page" | "country") => {
         const spec = { metrics: ["visitors" as const], groupBy: dim, limit: 300 };
         const [day, ...before] = await Promise.all([
-          env.QUERY.query(site.id, site.timezone, { ...spec, from: a.day, to: a.day, ...opts.window }),
+          env.QUERY.query(site.id, site.timezone, { ...spec, from: a.day, to: a.day, ...opts.window }, live),
           ...usualDays.map((d) => env.QUERY.query(site.id, site.timezone, { ...spec, from: d, to: d, ...span(d) })),
         ]);
         const totals = new Map<string, number>();

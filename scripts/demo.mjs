@@ -102,6 +102,8 @@ try {
   }
   log("rolling up daily totals…");
   await retry("rollup", () => call("/admin/rollup", {}));
+  log("building daily summaries…");
+  for (let i = 0; i < 60; i++) if ((await retry("summaries", () => call("/admin/summarise?months=6", {}))).done) break;
   log("checking for unusual days…");
   await retry("anomaly check", () => call("/admin/anomalies", {}));
   // Fill the 30-minute realtime window (not fatal if it fails; the regular ticks catch up).

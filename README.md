@@ -95,7 +95,7 @@ Custom events: `qwa("Signup", { props: { plan: "pro" } })`, or `class="qwa-event
 
 ```
  tracker (/t.js) ──POST /e──▶ Worker "qwa" ──▶ SiteDO (Durable Object per site: sessions, today, realtime)
-                                  │                    │ every 5 min
+                                  │                    │ every 15 min
                                   │                    ▼
                                   │              R2: Parquet files per site / table / day → month
                                   │                    ▲

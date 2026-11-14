@@ -5,6 +5,8 @@ import { AuthError, canViewSite, currentUser, forgetUsers, visibleSiteIds, type 
 import type { Env, Site } from "./env";
 import { forViewer } from "./realtime";
 import type { LiveFiles } from "../../query/src/index";
+import { answerMany } from "./answer";
+import { summariseSite } from "./summary";
 import { allSites, invalidateSites, siteById } from "./sites";
 import { alertDetail, anomalyJob, checkIntraday, emailConfigured, explainAnomaly, refreshAnomalies, sendAlertEmail, siteAnomalies } from "./alerts";
 import { moverChange, sampleAlert, topMovers } from "./email";
@@ -100,6 +102,9 @@ async function pastTotals(env: Env, ids: number[], fromDay: string) {
   return entry;
 }
 
+const OVERVIEW_SHARE_MS = 15_000;
+const overviewShared = new Map<string, { at: number; body: { sites: unknown[] } }>();
+
 /**
  * All visible sites with daily totals for the current range (`from`..`to`) and the comparison range
  * (`cfrom`..`cto`). Closed days come from D1; today (and yesterday until rolled up) live from each site's
@@ -122,6 +127,11 @@ api.get("/overview", async (c) => {
   const visible = await visibleSiteIds(c.env, user);
   const sites = (await allSites(c.env)).filter((s) => visible === "all" || visible.includes(s.id));
   const ids = sites.map((s) => s.id);
+  // Several tabs (or people) polling the same view within a few seconds share one answer, and one round of calls to
+  // the sites' Durable Objects.
+  const shareKey = `${user.role}|${ids.join(",")}|${new URL(c.req.url).search}`;
+  const shared = overviewShared.get(shareKey);
+  if (shared && Date.now() - shared.at < OVERVIEW_SHARE_MS) return c.json(shared.body);
   const [{ stored, lastActive }, anomalies] = await Promise.all([pastTotals(c.env, ids, [from, cfrom].sort()[0]), siteAnomalies(c.env, ids, [from, cfrom].sort()[0], to)]);
 
   const out = await Promise.all(
@@ -190,6 +200,8 @@ api.get("/overview", async (c) => {
       };
     }),
   );
+  for (const [k, v] of overviewShared) if (Date.now() - v.at >= OVERVIEW_SHARE_MS) overviewShared.delete(k);
+  overviewShared.set(shareKey, { at: Date.now(), body: { sites: out } });
   return c.json({ sites: out });
 });
 
@@ -262,7 +274,10 @@ api.post("/sites/:site/query", async (c) => {
   }
   const live = await liveFor(c.env, site, [spec]);
   try {
-    return c.json(await c.env.QUERY.query(site.id, site.timezone, spec, live));
+    for await (const a of answerMany(c.env, site, [{ i: 0, spec }], live, { direct: c.req.query("direct") === "1" })) {
+      return "result" in a ? c.json(a.result) : c.json({ error: a.error }, 502);
+    }
+    return c.json({ error: "query failed" }, 502);
   } catch (e) {
     console.error("query failed", e);
     return c.json({ error: `query failed: ${(e as Error).message}` }, 502);
@@ -294,15 +309,19 @@ api.post("/sites/:site/batch", async (c) => {
   const headers = { "content-type": "application/x-ndjson", "cache-control": "no-store" };
   if (!items.length) return new Response(invalid.join(""), { headers });
   const live = await liveFor(c.env, site, items.map((x) => x.spec));
-  const answers = await c.env.QUERY.queryMany(site.id, site.timezone, items, live);
-  if (!invalid.length) return new Response(answers, { headers });
+  // `?direct=1`: every report as one query over the events, skipping the daily summaries (for checking them).
+  const direct = c.req.query("direct") === "1";
   const { readable, writable } = new IdentityTransformStream();
   c.executionCtx.waitUntil(
     (async () => {
       const w = writable.getWriter();
-      await w.write(new TextEncoder().encode(invalid.join("")));
-      w.releaseLock();
-      await answers.pipeTo(writable);
+      const enc = new TextEncoder();
+      try {
+        if (invalid.length) await w.write(enc.encode(invalid.join("")));
+        for await (const a of answerMany(c.env, site, items, live, { direct })) await w.write(enc.encode(`${JSON.stringify(a)}\n`));
+      } finally {
+        await w.close().catch(() => undefined);
+      }
     })().catch((e) => console.warn("batch stream ended early", e)),
   );
   return new Response(readable, { headers });
@@ -816,7 +835,24 @@ admin.post("/sites/:site/flush", async (c) => {
 
 admin.post("/sites/:site/compact", async (c) => {
   const id = Number(c.req.param("site"));
-  return c.json({ compacted: await c.env.SITE.get(c.env.SITE.idFromName(String(id))).compactClosedMonths(id) });
+  return c.json({ compacted: await c.env.SITE.get(c.env.SITE.idFromName(String(id))).compactMonths(id) });
+});
+
+// Build the daily summaries now (normally hourly, a few months per run). `?months=` caps the work for this call.
+admin.post("/summarise", async (c) => {
+  let budget = Math.min(Math.max(Number(c.req.query("months")) || 24, 1), 200);
+  const results = [];
+  for (const site of await allSites(c.env)) {
+    if (budget <= 0) break;
+    try {
+      const r = await summariseSite(c.env, site, { maxChunks: budget });
+      budget -= r.chunks;
+      results.push({ domain: site.domain, ...r });
+    } catch (e) {
+      results.push({ domain: site.domain, error: (e as Error).message });
+    }
+  }
+  return c.json({ results, done: results.every((r) => "done" in r && r.done) && budget > 0 });
 });
 
 // Roll up daily totals now (normally nightly). Backfills history the first time it runs for a site.

@@ -6,12 +6,12 @@
 // Vitals, keeping each page view's latest report.
 import {
   COLUMNS, SESSION_DIMENSIONS, VITAL_DIMENSIONS,
-  type Dimension, type Filter, type Metric, type QuerySpec, type SessionDimension, type TableName, type VitalDimension,
+  type Dimension, type Filter, type InternalSpec, type Metric, type RawMetric, type SessionDimension, type TableName, type VitalDimension,
 } from "@qwa/shared";
 import { localTimeSql } from "./tz";
 
 export interface SqlInput {
-  spec: QuerySpec;
+  spec: InternalSpec;
   from: number; // unix seconds, inclusive
   to: number; // unix seconds, exclusive
   segments: [number, number][]; // tz offset segments for [from, to)
@@ -63,6 +63,8 @@ const VITALS_SOURCE = `SELECT session, any_value(visitor) AS visitor, pv, max(ts
   FROM src_engagement WHERE coalesce(pv, 0) <> 0 GROUP BY session, pv`;
 
 const p75 = (expr: string) => `round(quantile_cont(${expr}, 0.75))`;
+
+const TIME_GROUPS: string[] = ["day", "hour", "quarter_hour", "week", "month", "weekhour"];
 
 export function buildSql(input: SqlInput): { sql: string; key: string | null } {
   const { spec, from, to, segments, files } = input;
@@ -155,7 +157,7 @@ export function buildSql(input: SqlInput): { sql: string; key: string | null } {
   };
 
   const visitorsTable: Family = groupBy === "page" ? "pageviews" : groupBy === "event" ? "custom" : "sessions";
-  const metricSql: Record<Metric, () => void> = {
+  const metricSql: Record<Metric | RawMetric, () => void> = {
     visitors: () => add(visitorsTable, `${distinct("t.visitor")} AS visitors`),
     visits: () => add("sessions", "COUNT(*) AS visits"),
     views_per_visit: () => add("sessions", "round(SUM(t.pageviews) / nullif(COUNT(*), 0), 2) AS views_per_visit"),
@@ -175,6 +177,14 @@ export function buildSql(input: SqlInput): { sql: string; key: string | null } {
     inp_processing: () => add("vitals", `${p75("CASE WHEN t.inp > 0 THEN t.inp_processing END")} AS inp_processing`),
     inp_presentation: () => add("vitals", `${p75("CASE WHEN t.inp > 0 THEN t.inp_presentation END")} AS inp_presentation`),
     measured_views: () => add("vitals", "COUNT(*) AS measured_views"),
+    // The sums behind the ratios above, for answers assembled from parts (see @qwa/shared partial.ts).
+    bounces: () => add("sessions", "SUM(t.bounce) AS bounces"),
+    duration_sum: () => add("sessions", "SUM(t.duration) AS duration_sum"),
+    session_pageviews: () => add("sessions", "SUM(t.pageviews) AS session_pageviews"),
+    engaged_ms: () => add("engagement", "SUM(t.engaged_ms) AS engaged_ms"),
+    engaged_visitors: () => add("engagement", `${distinct("t.visitor")} AS engaged_visitors`),
+    scroll_sum: () => add("engagement", "SUM(nullif(t.scroll_depth, 0)) AS scroll_sum"),
+    scroll_n: () => add("engagement", "COUNT(nullif(t.scroll_depth, 0)) AS scroll_n"),
   };
   for (const m of spec.metrics) metricSql[m]();
 
@@ -195,21 +205,28 @@ export function buildSql(input: SqlInput): { sql: string; key: string | null } {
   const order: Family[] = [visitorsTable, "sessions", "pageviews", "custom", "engagement", "vitals"].filter(
     (t, i, a) => ctes.has(t as Family) && a.indexOf(t) === i,
   ) as Family[];
+  // One row per local day and value (for the stored daily summaries): group by the day as well.
+  const perDay = spec.perDay && groupBy && !TIME_GROUPS.includes(groupBy) ? spec.perDay : 0;
   for (const t of order) {
     const c = ctes.get(t)!;
     const key = keyFor(t);
+    const day = perDay ? `${localTimeSql(t === "sessions" ? "t.start" : "t.ts", segments)} // 86400 AS d, ` : "";
     withs.push(
-      `m_${t} AS (SELECT ${key ? `${key.expr} AS k, ` : ""}${c.selects.join(", ")} FROM src_${t} t ${key?.join ?? ""} WHERE ${whereFor(t).join(" AND ")}${key ? " GROUP BY 1" : ""})`,
+      `m_${t} AS (SELECT ${day}${key ? `${key.expr} AS k, ` : ""}${c.selects.join(", ")} FROM src_${t} t ${key?.join ?? ""} WHERE ${whereFor(t).join(" AND ")}${key ? ` GROUP BY ${day ? "1, 2" : "1"}` : ""})`,
     );
   }
 
   const [main, ...rest] = order;
   // Web Vitals stay NULL where nothing was measured (0 would read as "instant").
-  const vital = (m: Metric) => ["inp", "lcp", "cls", "ttfb", "fcp", "inp_delay", "inp_processing", "inp_presentation"].includes(m);
+  const vital = (m: Metric | RawMetric) => ["inp", "lcp", "cls", "ttfb", "fcp", "inp_delay", "inp_processing", "inp_presentation"].includes(m);
   const cols = spec.metrics.map((m) => (vital(m) ? `${m}` : `COALESCE(${m}, 0) AS ${m}`));
   let sql: string;
   if (!groupBy) {
     sql = `SELECT ${cols.join(", ")} FROM m_${main}${rest.map((t) => ` CROSS JOIN m_${t}`).join("")}`;
+  } else if (perDay) {
+    const joins = rest.map((t) => ` LEFT JOIN m_${t} USING (d, k)`).join("");
+    sql = `SELECT d, k AS ${groupBy}, ${cols.join(", ")} FROM m_${main}${joins} QUALIFY row_number() OVER (PARTITION BY d ORDER BY ${spec.metrics[0]} DESC NULLS LAST, k) <= ${perDay} ORDER BY d, ${spec.metrics[0]} DESC NULLS LAST, k`;
+    return { sql: `WITH ${withs.join(",\n")}\n${sql}`, key: "perday" };
   } else {
     const keyCol = groupBy;
     const joins = rest.map((t) => ` LEFT JOIN m_${t} USING (k)`).join("");

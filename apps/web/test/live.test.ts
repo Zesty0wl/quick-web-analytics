@@ -1,6 +1,6 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 import type { Query } from "@tanstack/react-query";
-import { FALLBACK_REFRESH_MS, isLive, loadStats, splitLines, staleLiveQueries } from "../src/api";
+import { FALLBACK_REFRESH_MS, FRESHNESS_MS, isLive, loadStats, splitLines, staleLiveQueries } from "../src/api";
 import { addDays, todayIn } from "../src/dates";
 
 const TZ = "Europe/London";
@@ -31,9 +31,9 @@ describe("isLive", () => {
 describe("staleLiveQueries", () => {
   const now = Date.now();
   it("refreshes a live report once the version has moved on and it's past its freshness interval", () => {
-    const fast = query(today, { version: "5", age: 11_000, freshness: "fast" }, now);
-    const slowTooSoon = query(today, { version: "5", age: 11_000 }, now);
-    const slowDue = query(today, { version: "5", age: 31_000 }, now);
+    const fast = query(today, { version: "5", age: FRESHNESS_MS.fast + 1000, freshness: "fast" }, now);
+    const slowTooSoon = query(today, { version: "5", age: FRESHNESS_MS.fast + 1000 }, now);
+    const slowDue = query(today, { version: "5", age: FRESHNESS_MS.slow + 1000 }, now);
     expect(staleLiveQueries([fast, slowTooSoon, slowDue], TZ, "6", "5", now)).toEqual([fast, slowDue]);
   });
   it("leaves reports alone while nothing has changed, until the fallback interval", () => {
@@ -47,7 +47,7 @@ describe("staleLiveQueries", () => {
     expect(staleLiveQueries([query(today, { version: "1", age: 60_000, fetching: true }, now)], TZ, "9", "1", now)).toEqual([]);
   });
   it("treats answers fetched before any version was known as the first version seen", () => {
-    const q = query(today, { age: 60_000 }, now);
+    const q = query(today, { age: FRESHNESS_MS.slow - 1000, freshness: "fast" }, now);
     expect(staleLiveQueries([q], TZ, "5", "5", now)).toEqual([]);
     expect(staleLiveQueries([q], TZ, "6", "5", now)).toEqual([q]);
   });

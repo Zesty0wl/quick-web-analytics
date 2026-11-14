@@ -55,8 +55,21 @@ export interface QuerySpec {
 export interface QueryResult {
   rows: Record<string, string | number | null>[];
   /** `cached`: answered from the query worker's cache (same query, same data). */
-  meta: { from: string; to: string; timezone: string; ms: number; files: number; cached?: boolean };
+  meta: {
+    from: string; to: string; timezone: string; ms: number; files: number; cached?: boolean;
+    /** How it was answered: stored daily summaries plus the days after them, closed days plus live days, or one query. */
+    source?: "summary" | "split" | "direct";
+    /** Where the time went, for queries the query worker ran (see QueryPerf). */
+    perf?: QueryPerf;
+  };
 }
+
+/**
+ * What one query cost the query worker. `r2Reads`/`r2Kb`: byte ranges fetched from R2 one at a time; `cacheHits`: ranges
+ * served from the Cache API; `prefetched`/`prefetchMs`: whole files loaded in parallel before the queries ran (counted
+ * on the first query of a batch); `cold`: DuckDB had to start for this query.
+ */
+export interface QueryPerf { duckMs: number; r2Reads: number; r2Kb: number; cacheHits: number; ioMs: number; prefetched?: number; prefetchKb?: number; prefetchMs?: number; cold?: boolean }
 
 /** Which metrics can be computed for a given grouping. */
 export function allowedMetrics(groupBy: GroupBy | null | undefined): readonly Metric[] {

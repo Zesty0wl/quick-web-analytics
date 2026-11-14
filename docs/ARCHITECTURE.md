@@ -17,8 +17,9 @@ QWA is two Workers and three kinds of storage. This page explains what each piec
   SiteDO (one per site)          Worker "qwa-query"              D1 "qwa"
   SQLite: live sessions,         DuckDB-WASM, reads only the     sites, users, grants,
   last 3 days of events,         Parquet it needs from R2        salts, daily totals
+                                                                 and summaries
   realtime, "today"                      ▲
-        │ every 5 minutes                │
+        │ every 15 minutes               │
         └──────────▶ R2 "qwa-data": Parquet per site / table / day → month
 ```
 
@@ -45,11 +46,11 @@ One Durable Object per site keeps ingestion simple and strongly consistent. A si
 
 ## Storage
 
-The Durable Object writes every day that changed to R2 as Parquet, every 5 minutes, then keeps about three days locally for "today" and realtime.
+The Durable Object writes every day that changed to R2 as Parquet, every 15 minutes, then keeps about three days locally for "today" and realtime. Nothing waits for that write: reports read unwritten events straight from the Durable Object (below).
 
 ```
 sites/<site>/<table>/day/<YYYY-MM-DD>.parquet     UTC day, rewritten while it's live
-sites/<site>/<table>/month/<YYYY-MM>.parquet      closed months, merged nightly
+sites/<site>/<table>/month/<YYYY-MM>.parquet      settled days, merged nightly (the current month so far, and closed months)
 sites/<site>/<table>/import/<YYYY-MM>.parquet     imported history (e.g. from Plausible CE)
 tables: sessions · pageviews · engagement · custom
 ```
@@ -60,6 +61,8 @@ tables: sessions · pageviews · engagement · custom
   - Files written before these columns existed are read with `union_by_name`, and compaction fills the missing columns with defaults.
 - **Sorted by time, 256k-row groups.** DuckDB skips row groups outside the date range.
 - **Month files after compaction.** A 12-month query reads about 12 files per table, not 365.
+  - Each night, day files more than two days old are folded into their month's file, for the current month as well as closed ones. Younger days can still change (the Durable Object keeps three days of rows), so they stay as day files.
+  - A month file's metadata records the last day it holds (`through`), so the query side knows which day files it has replaced.
   - Compaction streams one row group at a time and is idempotent.
   - While a merge is in progress, the query side ignores day files already folded into a month file, so nothing is counted twice.
 
@@ -79,6 +82,7 @@ The query Worker turns it into DuckDB SQL (`apps/query/src/sql.ts`) and runs it 
 
 **Reading from R2:**
 - R2 reads go through the binding. DuckDB's HTTP reads are intercepted and served from R2.
+- **Small files are loaded whole, in parallel, before a batch runs.** DuckDB asks for a Parquet file as many small byte ranges, one at a time, which made a cold start slow (about 200 reads in sequence for a 30-day page). Files up to 2 MB that DuckDB hasn't read yet are fetched whole, six at a time, up to 8 MB per call, and their ranges served from memory. Larger files are still read by range.
 - A Cache API layer holds the byte ranges DuckDB asks for.
 - File URLs carry the object's ETag, so a rewritten file is never served stale.
 
@@ -93,6 +97,26 @@ The query Worker turns it into DuckDB SQL (`apps/query/src/sql.ts`) and runs it 
 | 30 days | up to 1.7 s |
 | A busy month (about 3M events) | 0.5–2.0 s |
 | 12 months | 2.3–4.1 s |
+
+### Answering from parts
+
+Every traffic metric is built from sums and counts, so a report over a range can be worked out for pieces of the range and added up (`packages/shared/src/partial.ts`). The main Worker (`apps/worker/src/answer.ts`) answers each report the cheapest way it allows:
+
+| How | Which reports | Where the data comes from |
+|---|---|---|
+| `summary` | No filters, grouped by nothing, day/week/month, weekday-hour, or a breakdown the site page shows | Closed days from D1's daily summaries; only the days after them (today, usually) from the events |
+| `split` | Anything else that adds up: filtered reports, hourly charts, other groupings | The closed days as one query, whose answer the query Worker keeps until the files change, plus the days still receiving events |
+| `direct` | Web Vitals (percentiles don't add up), and ranges with no closed day in them | One query over the events |
+
+**Daily summaries** (`daily_dims` in D1, written by `summary.ts`):
+- One row per site, local day, dimension and value: the day's totals, its hours, and its top 500 rows by visitors for each breakdown the site page shows.
+- The columns are sums (visits, bounces, total duration, engaged time…), and ratios such as bounce rate are worked out after adding up.
+- The hourly job summarises each day once it has been over for two hours, and a site's history a month at a time, oldest first. A report is only answered from summaries for the days they cover; the rest comes from the events.
+- If a site's timezone changes, its summaries are rebuilt.
+
+**Unique visitors** are added across days. Visitor hashes change every UTC day, so that equals a count over the range, except that a visitor active either side of a local midnight that isn't a UTC midnight is counted in both local days. The overview's daily totals have always counted this way.
+
+Each answer's `meta` carries `source` and, when the query Worker ran, `perf` (DuckDB time, R2 reads, cache hits, files loaded, whether DuckDB had to start). `?direct=1` on the batch or query endpoint answers everything as one query each, for comparison.
 
 ### Batching and caching
 
@@ -115,7 +139,7 @@ A site's page opens a WebSocket to `/api/sites/<id>/live`. The Worker checks sig
 
 - **Hibernation:** the object accepts it with the WebSocket Hibernation API, so an open but quiet connection costs nothing.
 - **Pushes:** when events arrive, the object pushes a realtime snapshot, at most every 2 seconds. The snapshot carries a data version (the newest event's id).
-- **Refreshing reports:** reports that include today refetch when the version has moved past the one they were fetched at: the headline numbers and chart after at least 10 seconds, sections after 30. Only on-screen reports refetch, as a batch.
+- **Refreshing reports:** reports that include today refetch when the version has moved past the one they were fetched at: the headline numbers and chart after at least a minute, sections after 5 minutes. Only on-screen reports refetch, as a batch.
 - **Quiet periods:** after 25 seconds without a push, the page asks for a fresh snapshot, so "visitors now" falls when traffic stops.
 - **Hidden tabs:** the socket closes and reopens on return.
 - **Fallback:** if it can't connect, the page polls `/api/sites/<id>/realtime` (which carries the same version) every 10 seconds.
@@ -138,7 +162,8 @@ A site's page opens a WebSocket to `/api/sites/<id>/live`. The Worker checks sig
 | UTC | Job |
 |---|---|
 | 00:05 | Rotate the visitor-hash salt; delete salts older than two days |
-| 03:30 | Merge closed months' day files into month files, then fill `daily_stats` up to yesterday |
+| 03:30 | Merge settled day files into month files, then fill `daily_stats` up to yesterday |
+| hh:10 | Hourly jobs (a Durable Object alarm): the "so far today" anomaly check, daily summaries for days that have closed, and overnight the PageSpeed tests |
 
 ## Why not…
 

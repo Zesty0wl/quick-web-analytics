@@ -5,6 +5,24 @@ All notable changes to Quick Web Analytics. Dates are UTC. Database changes ship
 
 ## [Unreleased]
 
+### Faster and lighter
+
+- **Site pages load from daily summaries.** Each closed day's totals, hours and top rows per breakdown are now stored once in D1 (`daily_dims`). The standard reports (no filters) add up those days and read only today's events, where before every report read every event in the range. In the demo, a 30-day page that took 3.7 s and 201 R2 reads from a cold start now takes 0.9 s and 4, and a refresh while events arrive takes about 0.4 s with none.
+  - **Filtered reports and hourly charts are split too:** the closed days as one query whose answer is kept until the files change, plus the days still receiving events.
+  - **Web Vitals** are percentiles, which don't add up across days, so they are still worked out from the events.
+- **12-month and All ranges count visitors exactly.** Ranges over 92 days used an approximate count, which in testing came out about 9% low for a year's total and further out for single days. Standard reports now add up exact daily counts.
+- **Cold starts read files in parallel.** The query Worker loads the small files a batch needs whole, six at a time, where DuckDB used to ask for them a byte range at a time. Files it has already read aren't fetched again.
+- **The current month is compacted nightly.** Settled days (older than two days) are folded into the month's file each night, as closed months already were. A 30-day range reads about 20 files, down from 60.
+- **Fewer background requests.**
+  - An open site page recounts its headline numbers at most once a minute and its sections every 5 minutes while events arrive (was every 10 and 30 seconds). The realtime panel still updates within 2 seconds.
+  - The overview polls every 60 seconds (was 30), and tabs polling the same view within 15 seconds share one answer.
+  - Sites write changed days to R2 every 15 minutes (was 5). Reports are unaffected: they read unwritten events straight from the site's Durable Object.
+- **Timings in every answer.** Each query's `meta` now says how it was answered (`source`: `summary`, `split` or `direct`) and what it cost (`perf`: DuckDB time, R2 reads, cache hits, files loaded, whether DuckDB had to start). Add `?direct=1` to `/api/sites/<id>/batch` or `/query` to answer straight from the events, for comparison.
+
+### Changed
+
+- **Unique visitors over a range are the sum of each local day's visitors** on the standard reports, as the overview already counted them. A visitor active either side of midnight on a site whose timezone isn't UTC now counts once in each day. In testing this moved totals by under 0.2%.
+
 ### Added
 
 - **More date ranges: 24H and All.** The range picker is now Today · 24H · 7D · 30D · 90D · 12M · All.
@@ -27,7 +45,7 @@ All notable changes to Quick Web Analytics. Dates are UTC. Database changes ship
   - **API:** a new endpoint, `POST /api/breakdown`, answers one breakdown across all your sites in one call.
 - **The dashboard updates itself.** You never need to reload to see new data.
   - **Pushed live:** a site's page keeps a WebSocket open to that site's Durable Object, which pushes the realtime panel at most every 2 seconds while events arrive. Hibernation means an idle connection costs nothing, and the page asks for a fresh snapshot after 25 quiet seconds so "visitors now" falls when traffic stops.
-  - **Reports follow:** each push carries a data version. Reports that include today refresh when it moves on, the headline numbers and chart within about 10 seconds and the sections within 30, and only while they're on screen. Past ranges never refetch.
+  - **Reports follow:** each push carries a data version. Reports that include today refresh when it moves on, the headline numbers and chart within about a minute and the sections within 5 minutes, and only while they're on screen. Past ranges never refetch.
   - **Hidden tabs:** the connection closes while the tab is hidden and catches up when you return. If it can't connect, the page polls every 10 seconds instead.
   - **Midnight:** "Today", "Last 7 days" and the other presets move on at midnight in the site's timezone in a tab left open.
 - **Google Search section** on each site's page, from Search Console:
@@ -97,6 +115,9 @@ All notable changes to Quick Web Analytics. Dates are UTC. Database changes ship
 
 ### Upgrade notes
 
+- **Apply migration `0011_daily_dims`** (the daily summaries), then deploy both Workers (`npm run deploy`).
+- **Summaries build themselves.** The hourly job summarises about 12 site-months per run, oldest first, so a long history takes a few hours; until a site is done its reports are answered from the events as before. To build them at once, an admin can `POST /api/admin/summarise?months=24` (repeat until it answers `"done": true`).
+- **Changing a site's timezone** rebuilds its summaries over the following hours.
 - **Add the Scheduler to `apps/worker/wrangler.jsonc`** (see `wrangler.example.jsonc`). Add `{ "name": "SCHEDULER", "class_name": "Scheduler" }` to `durable_objects.bindings`, add `{ "tag": "v2", "new_sqlite_classes": ["Scheduler"] }` to `migrations`, and remove `"10 * * * *"` from `triggers.crons`.
 - Apply migrations `0007_google` (adds `sites.gsc_property` and the `speed_runs` table), `0008_settings` (credentials saved from the dashboard), `0009_api_tokens` and `0010_oauth`.
 - **Live updates need nothing new in Cloudflare.** The WebSocket (`/api/sites/<id>/live`) is a dashboard path, behind the same Access application. Deploy both Workers together with `npm run deploy`, which deploys the query Worker first.

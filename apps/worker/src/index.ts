@@ -115,11 +115,11 @@ app.get("/assets/*", async (c) => {
 // Everything else is the dashboard SPA.
 app.all("*", (c) => c.env.ASSETS.fetch(c.req.raw));
 
-/** Nightly: fold finished months' day files into month files, one site at a time. */
+/** Nightly: fold settled day files into month files (closed months, and the current month so far), one site at a time. */
 async function compactAll(env: Env) {
   for (const site of await allSites(env)) {
     try {
-      const done = await env.SITE.get(env.SITE.idFromName(String(site.id))).compactClosedMonths(site.id);
+      const done = await env.SITE.get(env.SITE.idFromName(String(site.id))).compactMonths(site.id);
       if (done.length) console.log("compacted", site.domain, JSON.stringify(done));
     } catch (err) {
       console.error("compaction failed", site.domain, err);
